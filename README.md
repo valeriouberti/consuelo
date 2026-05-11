@@ -1,191 +1,161 @@
 # Second Brain
 
-Workflow Python giornaliero che legge articoli web, transcript YouTube e
-luoghi Google Maps salvati nella vault Obsidian, li correla con le note
-esistenti tramite embeddings e produce una nota di recap in `Daily/`.
+Workflow Python che processa contenuti salvati nella tua vault Obsidian
+(articoli web, transcript YouTube, place Google Maps, PDF su Google Drive,
+RSS feed) e li trasforma in note arricchite: ogni item viene classificato
+da un LLM, ottiene categoria + tag + summary + correlations con le tue
+note esistenti, e finisce in `Notes/<Categoria>/<slug>.md`.
 
-## Struttura repo
+Include un comando RAG `ask` per interrogare l'intera vault in linguaggio
+naturale.
 
-```
-second-brain/
-├── second_brain/        # package Python
-│   ├── cli.py           # entrypoint `second-brain`
-│   ├── config.py        # env vars
-│   ├── models.py        # Source dataclass
-│   ├── state.py         # delta tracking (.state/)
-│   ├── sources.py       # extractors article/youtube/place
-│   ├── llm.py           # ollama/openai dispatch + prompts
-│   ├── vector.py        # ChromaDB helpers
-│   ├── rendering.py     # daily note markdown
-│   └── pipeline.py      # orchestrator + indexer
-├── prompts/             # template editabili (recap, place, tags)
-├── tests/               # pytest
-├── pyproject.toml
-├── .env.example
-└── README.md
-```
-
-## Setup rapido (5 comandi)
+## Quick start (5 comandi)
 
 ```bash
 git clone <repo> second-brain && cd second-brain
 python3.12 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-cp .env.example .env       # poi modifica i valori
-second-brain index         # indicizza Notes/ una tantum
+cp .env.example .env                # modifica i valori
+mkdir -p vault/{Inbox/{articles,youtube,places},Notes}
 ```
 
-Per modalità locale: avvia Ollama prima dell'indicizzazione.
+### Modalità locale (Ollama, gratis, offline)
 
 ```bash
 ollama serve &
-ollama pull llama3
-ollama pull nomic-embed-text
+ollama pull qwen2.5:14b
+ollama pull nomic-embed-text-8k
+```
+
+### Modalità cloud (OpenAI, veloce, paghi)
+
+Imposta in `.env`:
+```
+LLM_MODE=cloud
+OPENAI_API_KEY=sk-...
+```
+
+## Cosa fa il workflow
+
+```
+Inbox/articles/<file>.html|.md
+    ↓
+[extract]  readability → markdown via markdownify
+    ↓
+[embed]    cache hit O(1) o API call
+    ↓
+[classify] LLM → JSON {category, summary, tags, correlations}
+    ↓
+[write]    Notes/<Categoria>/<slug>.md (frontmatter + summary + body)
+    ↓
+[cleanup]  delete Inbox file, mark state processed
+```
+
+### Output `.md` finale
+
+```markdown
+---
+category: Tech
+correlations: ['[[Notes/Kubernetes/Basics]]']
+date_processed: '2026-05-11'
+source: https://www.ft.com/content/...
+tags: [kubernetes, operators, platform-engineering]
+title: Kubernetes Operators Pattern
+---
+
+## 📝 Summary _(generated 2026-05-11)_
+> Sintesi 3-5 frasi LLM-curate.
+
+**Tag**: #kubernetes #operators #platform-engineering
+**Connesso a**: [[Notes/Kubernetes/Basics]]
+
+---
+
+# Kubernetes Operators Pattern
+
+<body originale markdown preservato>
 ```
 
 ## Struttura vault
 
 ```
 vault/
-├── Inbox/                      # input transitorio
-│   ├── articles/               # .html o .md (Web Clipper)
-│   ├── youtube/                # .txt con URL YouTube
-│   └── places/                 # .json place Google Maps
-├── Daily/                      # OUTPUT
-│   ├── YYYY-MM-DD.md           # Daily corrente
-│   └── YYYY/MM/YYYY-MM-DD.md   # Daily archiviati (auto)
-├── Notes/                      # note personali Obsidian
-│   ├── *.md                    # tue note (indicizzate per correlazioni)
-│   ├── articles/YYYY-MM-DD/    # articoli processati (auto, NON indicizzati)
-│   ├── youtube/YYYY-MM-DD/     # transcript processati (auto)
-│   └── places/YYYY-MM-DD/      # place processati (auto)
-└── .state/                     # interno workflow (gitignored)
+├── Inbox/                          # input transitorio
+│   ├── articles/                   # .html (Web Clipper, curl) o .md
+│   ├── youtube/                    # .txt (URL) o .md (TODO per-item)
+│   └── places/                     # .json (TODO per-item)
+├── Notes/                          # OUTPUT + tue note personali
+│   ├── Tech/                       # auto-create dal classifier
+│   ├── Finance/
+│   ├── Travel/
+│   └── <Le tue note>/              # indicizzate per correlations
+├── .config/
+│   └── feeds.json                  # lista RSS (opzionale)
+├── .state/                         # delta tracking (gitignored)
+├── .cache/                         # embedding cache (gitignored)
+└── .chroma/                        # vector store (gitignored)
 ```
 
-**Archiviazione automatica**
+**Categoria libera con hint**: il classifier riceve la lista delle
+cartelle già esistenti sotto `Notes/` e preferisce riusarle invece di
+inventare duplicati ("AI" vs "Artificial Intelligence" → sceglie quella
+esistente).
 
-Dopo ogni `second-brain run` con successo:
-- I file `Inbox/{kind}/*` vengono spostati in `Notes/{kind}/{run-date}/`.
-- I Daily passati (qualunque `Daily/YYYY-MM-DD.md` con data != run corrente)
-  vengono spostati in `Daily/YYYY/MM/YYYY-MM-DD.md`.
-- `--dry-run` non sposta nulla.
-
-Le sottocartelle `Notes/articles/`, `Notes/youtube/`, `Notes/places/` sono
-escluse dall'indexing Chroma per evitare che gli articoli grezzi compaiano
-come "note correlate". Le tue note personali devono stare direttamente
-sotto `Notes/` o in sottocartelle a tema diverse (es. `Notes/Kubernetes/`).
-
-Crea manualmente le cartelle prima della prima run:
+## Comandi
 
 ```bash
-mkdir -p vault/{Inbox/{articles,youtube,places},Daily,Notes}
+# Processa articoli in Inbox
+second-brain run
+second-brain run --dry-run                  # stampa output, no scrittura
+second-brain run --mode cloud               # override OpenAI
+
+# RAG sulle tue note + Daily
+second-brain ask "cosa ho letto sui Kubernetes operators?"
+second-brain ask "ricorda i posti che voglio visitare a Berlino" -k 12
+
+# Indicizza vault (Notes/ + Daily/) per le correlations
+second-brain index
+second-brain index --incremental            # solo file modificati
+second-brain index --no-daily               # solo Notes/
+
+# Equivalente senza entrypoint installato
+python -m second_brain run
 ```
 
-## Configurazione `.env`
+## Come aggiungere contenuti
 
-### Senza Google Maps API
-Lascia `GOOGLE_MAPS_API_KEY=` vuoto. I place vengono comunque processati
-usando solo i metadati nel JSON; non verranno aggiunte recensioni recenti.
+### Articoli (`Inbox/articles/`)
 
-### Con Google Maps API
-1. Abilita Places API su Google Cloud Console
-2. Crea API key con restrizione su Places API
-3. Inserisci la chiave in `GOOGLE_MAPS_API_KEY=`
+Estensioni: `.html`, `.htm`, `.md`.
 
-### Modalità LLM
-- `LLM_MODE=local` → Ollama (gratis, offline, più lento)
-- `LLM_MODE=cloud` → OpenAI (richiede `OPENAI_API_KEY`, più veloce)
-
-## Come aggiungere contenuti all'Inbox
-
-### Articoli
-Estensioni accettate: `.html`, `.htm`, `.md`.
-
-**Manuale (HTML):** salva la pagina con `Cmd+S` come `.html` in
-`vault/Inbox/articles/`. Viene processato da readability-lxml.
-
-**curl (HTML):**
+**HTML manuale** — salva la pagina con `Cmd+S` come `.html`:
 ```bash
 curl -sL "https://example.com/post" -o vault/Inbox/articles/2026-05-11_slug.html
 ```
 
-**Obsidian Web Clipper (Markdown):** configura per salvare in
-`vault/Inbox/articles/` come `.md`. Lo script riconosce il frontmatter:
-
+**Obsidian Web Clipper (Markdown)** — configura output `vault/Inbox/articles/`,
+frontmatter così:
 ```yaml
 ---
-title: "Titolo Articolo"      # usato come titolo nella nota Daily
+title: "Titolo Articolo"      # usato come slug filename
 source: "https://..."         # URL canonico (o `url:`)
 clipped_at: 2026-05-11
 ---
 
-Corpo dell'articolo in markdown.
+Body dell'articolo in markdown.
 ```
 
-Senza frontmatter, `title = nome file (senza ext)` e `url = file://...`.
-Per articoli `.md` readability viene bypassato: il body markdown è già
-pulito.
+Senza frontmatter: `title = nome file` e `url = file://...`.
 
-### YouTube
-Estensioni accettate: `.txt` (URL nudo) o `.md` (frontmatter + URL nel body).
+### YouTube (TODO)
 
-**`.txt` manuale (minimal):**
-```bash
-echo "https://youtu.be/dQw4w9WgXcQ" > vault/Inbox/youtube/2026-05-11_video.txt
-```
+Estensioni: `.txt` (URL nudo) o `.md` (frontmatter + URL).
+Attualmente **gathered ma non scritti** nel per-item flow. Verranno
+implementati nella prossima iterazione.
 
-**`.md` con frontmatter (consigliato, simile al flusso articoli):**
+### Place Google Maps (TODO)
 
-```yaml
----
-title: "Titolo del video"
-url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
-channel: "Nome canale"
-published: 2026-05-10
-duration: "00:42:10"
-thumbnail: "https://img.youtube.com/vi/dQw4w9WgXcQ/maxresdefault.jpg"
-description: "Una riga descrittiva opzionale"
-clipped_at: 2026-05-11
----
-
-https://www.youtube.com/watch?v=dQw4w9WgXcQ
-```
-
-Lo script:
-- estrae l'URL via regex dal contenuto (body o frontmatter)
-- usa `title` dal frontmatter (fallback: `YouTube video {video_id}`)
-- mette `channel`, `published`, `duration`, `thumbnail`, `description` in
-  `Source.extra` (disponibili per usi futuri, es. include nel Daily output)
-- scarica il transcript via `youtube-transcript-api` indipendentemente dai
-  metadati del file
-
-**Properties suggerite (per Web Clipper):**
-
-| Property | Tipo | Web Clipper variable | Note |
-|----------|------|----------------------|------|
-| `title` | string | `{{title}}` | Titolo del video |
-| `url` | string | `{{url}}` | URL canonico |
-| `channel` | string | `{{author}}` o `{{meta:itemprop=author}}` | Nome canale |
-| `published` | date | `{{published}}` o `{{meta:itemprop=datePublished}}` | Data pubblicazione |
-| `duration` | string | `{{meta:itemprop=duration}}` (ISO 8601 → mm:ss se serve) | Durata |
-| `thumbnail` | string | `{{image}}` o `https://img.youtube.com/vi/{{video_id}}/maxresdefault.jpg` | Anteprima |
-| `clipped_at` | date | `{{date}}` | Quando l'hai salvato |
-| `tags` | list | manuale | Hint pre-tagging (opzionale) |
-
-**Web Clipper template YouTube:**
-
-- **Triggers**: URL contains `youtube.com/watch`, URL contains `youtu.be/`
-- **Output type**: Markdown
-- **Path**: `Inbox/youtube`
-- **File name**: `{{date|YYYY-MM-DD}}_{{title|slug}}.md`
-- **Frontmatter**: usa la tabella sopra
-- **Body**: `{{url}}`
-
-**Limite:** un file = un video. Più URL nello stesso file vengono ignorati
-(solo il primo match viene processato). Crea un file per video.
-
-### Place Google Maps
-**Manuale:** crea un `.json` in `vault/Inbox/places/`:
+`.json` in `Inbox/places/`. Stessa nota: gathered ma non scritti.
 
 ```json
 {
@@ -195,67 +165,128 @@ Lo script:
   "category": "Ristorante italiano",
   "address": "Via Colleoni 4, Bergamo",
   "rating": 4.6,
-  "reviews_count": 312,
   "url": "https://maps.google.com/?cid=...",
-  "notes_personali": "consigliato da Luca",
-  "saved_at": "2026-05-10T19:30:00"
+  "notes_personali": "consigliato da Luca"
 }
 ```
 
-**iOS Shortcut hint:** crea uno Shortcut "Save Place" che riceve un link
-Google Maps via Share Sheet, costruisce il JSON sopra e lo salva via iCloud
-Drive in `vault/Inbox/places/`. Usa l'azione *Get Details of URL* per
-estrarre titolo e indirizzo dalla pagina.
+### PDF (Google Drive)
 
-## Uso
+PDF non vivono in git/vault — su Drive, source of truth. Pipeline legge,
+estrae articoli con heading-detection font-size, scrive note arricchite.
 
-```bash
-second-brain run                  # ieri, modalità da LLM_MODE
-second-brain run --date 2026-05-09
-second-brain run --dry-run        # stampa su stdout, non scrive
-second-brain run --mode cloud     # override su OpenAI
-second-brain index                # reindicizza Notes/ (full)
-second-brain index --incremental  # solo file modificati
+**Setup una tantum**:
+
+1. Crea Service Account su Google Cloud → scarica JSON key
+2. Crea 2 cartelle Drive: `Inbox/PDFs/` e `Processed/PDFs/`
+3. Condividile come **Editor** con email service account
+4. Copia folder ID dall'URL Drive e metti in `.env`:
+   ```
+   GDRIVE_CREDENTIALS_JSON=/path/sa.json
+   GDRIVE_INBOX_PDF_FOLDER_ID=1AbC...
+   GDRIVE_PROCESSED_PDF_FOLDER_ID=1XyZ...
+   ```
+
+Quotidiano: salvi PDF su `Inbox/PDFs/` su Drive. Pipeline scarica,
+processa, sposta a `Processed/PDFs/`.
+
+### RSS feed (Newsletter)
+
+Crea `vault/.config/feeds.json`:
+```json
+[
+  {"name": "TLDR Tech", "url": "https://tldr.tech/api/rss/tech"},
+  {"name": "TLDR AI",   "url": "https://tldr.tech/api/rss/ai"}
+]
 ```
 
-Equivalente senza entrypoint installato:
+Feed top-N entries più recenti per feed (default 3). Per newsletter
+email-only (FT, WSJ), opzioni:
+1. Cerca RSS premium subscriber (FT `myFT > Feeds`)
+2. **Kill the Newsletter** — `kill-the-newsletter.com` genera email
+   anonimo che converte newsletter in feed RSS
+
+`FEED_MAX_ENTRIES_PER_FEED=N` per cambiare cap (recovery dopo weekend).
+
+## Comando `ask` (RAG)
+
+Interroga la vault in linguaggio naturale:
 
 ```bash
-python -m second_brain run --dry-run
+second-brain ask "quali pattern distribuiti ho studiato?"
 ```
 
-## Delta tracking — `.state/`
+Embedda la query → cerca top-K entries in Chroma (Notes/ + Daily/) →
+LLM risponde con citation wiki-link. Richiede `second-brain index` una
+volta per popolare il vector store.
 
-Ogni sorgente ha un file `vault/.state/processed_{source}.json` con la lista
-degli ID già elaborati. Il workflow è **idempotente**: rilanciandolo non
-duplica output. Lo state file viene aggiornato SOLO se la scrittura della
-nota Daily è andata a buon fine.
+Output stdout, formato:
+```markdown
+Negli ultimi mesi hai studiato consensus distribuito tramite Raft
+[[Notes/Distributed/Raft]] e Paxos [[Notes/Distributed/Paxos]]...
 
-`.state/` è in `.gitignore` ed escluso da Obsidian Sync: è uno stato locale
-della macchina che esegue il workflow.
-
-**Forzare re-elaborazione completa:**
-
-```bash
-python -c "from second_brain import state; state.reset_state('articles')"
+## Fonti
+- [[Notes/Distributed/Raft]] — Raft consensus
+- [[Notes/Distributed/Paxos]] — Multi-Paxos
 ```
 
-## Cron (macOS)
+## Configurazione `.env`
 
-Esegui ogni mattina alle 07:00:
+Vedi `.env.example` per la lista completa. Variabili principali:
 
+| Env | Default | Uso |
+|-----|---------|-----|
+| `VAULT_PATH` | `./vault` | Root vault Obsidian |
+| `LLM_MODE` | `local` | `local` (Ollama) o `cloud` (OpenAI) |
+| `ASYNC_CONCURRENCY` | 8 cloud, 1 local | Concurrent LLM/embed/HTTP |
+| `EMBED_CHAR_LIMIT` | 20000 | Auto-shrink su context overflow |
+| `FEED_MAX_ENTRIES_PER_FEED` | 3 | Top-N per feed |
+| `LOG_LEVEL` | INFO | DEBUG per verbose |
+
+### Modelli
+
+- **Local Ollama** (default): `qwen2.5:14b` (chat) + `nomic-embed-text-8k` (embed)
+  - Tradeoff: gratis, offline, ~12s per articolo
+- **Cloud OpenAI**: `gpt-4o-mini` + `text-embedding-3-small`
+  - Tradeoff: ~$0.01 per 100 articoli, ~2s per articolo
+
+## Async + cache
+
+Pipeline parallelizza embed + LLM + URL fetch via `asyncio` + `httpx`.
+Cloud: ~5x speedup vs sync. Local: serializzato da Ollama, ma codice
+compatible.
+
+**Embedding cache** SQLite in `vault/.cache/embeddings.db`. Stesso
+articolo re-processed = 0 chiamate API embed. Cache namespace per modello
+(cambio modello = cache separata).
+
+## Cost tracking
+
+Cloud mode logga a fine run:
+```
+INFO embedding cache: 17 hits
+INFO cost: $0.0042 (chat: 1240 prompt + 380 completion @ gpt-4o-mini
+              | embed: 2100 @ text-embedding-3-small)
+```
+
+Pricing hardcoded in `llm.py::_PRICING_PER_1M_USD`, sync manuale con
+[OpenAI pricing](https://openai.com/api/pricing/).
+
+## Cron / automation
+
+**Crontab macOS** (ogni mattina alle 07:00):
 ```cron
 0 7 * * * cd /Users/<you>/path/to/second-brain && /Users/<you>/path/to/second-brain/.venv/bin/second-brain run >> /tmp/second-brain.log 2>&1
 ```
 
-Aggiungi con `crontab -e`. Verifica che il binario Python sia quello del
-virtualenv (non quello di sistema).
+Per GitHub Actions in produzione: setup OAuth/SA + vault sync (rsync,
+git LFS, S3). TODO esempio workflow.
 
 ## Sviluppo
 
 ```bash
 pip install -e ".[dev]"
-pytest                  # unit test
+pytest                  # unit test (22 attivi)
 ruff check .            # lint
 ruff format .           # format
 ```
@@ -267,26 +298,41 @@ ruff format .           # format
 ollama serve &
 curl http://localhost:11434/api/tags   # deve rispondere 200
 ```
-Se i modelli non ci sono: `ollama pull llama3 && ollama pull nomic-embed-text`.
 
-**Transcript YouTube non disponibile**
-Capita quando il video non ha sottotitoli (né manuali né auto-generati), o è
-geo-bloccato. Lo script logga un warning e salta il video. Soluzioni:
-- usare un video con sottotitoli
-- impostare proxy/VPN se geo-bloccato
-- per video critici, generare transcript manualmente e salvare il testo
-  direttamente in `vault/Inbox/articles/` come `.html` con `<body>...</body>`
+**Articoli `.html` con poca struttura preservata**
+Readability+markdownify produce risultato pulito ma non perfetto per
+pagine JS-rendered o con layout complesso. Salva direttamente in `.md`
+via Web Clipper se possibile.
 
-**`place_id` mancante nel JSON**
-Lo script usa il path del file come ID nello state. Funziona, ma non puoi
-chiamare la Places API per le recensioni recenti. Aggiungi `place_id`
-estraendolo dall'URL del place (parametro `cid` o uso esplicito dell'API
-Place Search).
+**Categoria nuova creata invece di riusare esistente**
+LLM riceve `existing_categories()` come hint. Se sbaglia, è il prompt
+da raffinare (`prompts/classify.txt`) o lascia che impari su volume.
+Folder simili "AI" vs "Artificial Intelligence" si possono mergiare a
+mano una volta accumulate.
 
-**ChromaDB non raggiungibile / `Notes/` vuota**
-Il workflow procede comunque, senza correlazioni (nessun wikilink in output).
-Esegui `python index_vault.py` per popolare il vector store.
+**Drive: service account 403 / file non trovato**
+Service account NON ha quota propria. Cartelle DEVONO essere condivise
+come Editor con `client_email` dal JSON SA. Verifica condivisione.
 
-**OpenAI Batch API**
-Non implementata nel main script perché ha latenza fino a 24h. Per cron
-giornaliero usa le Chat Completions sincrone (default in `LLM_MODE=cloud`).
+**RSS feed bozo / parsing error**
+Feed malformato lato producer. Log warning, skip feed. Verifica URL feed
+con `curl -sL <url>`.
+
+**`feeds.json` malformed JSON**
+File vuoto/corrupt → log warning, feed skipped. Cancella file o ripristina
+formato valido.
+
+**Daily/ non più aggiornato**
+Workflow è ora per-item. Daily aggregato disabilitato. Le note enriched
+vivono in `Notes/<Categoria>/`. Per re-attivare Daily, modifica `cli.py::run`.
+
+**Cost tracking sballato**
+Pricing in `llm.py::_PRICING_PER_1M_USD` può essere obsoleto. Update sync
+con OpenAI pricing page.
+
+**Embedding cache occupa molto spazio**
+Cache safe-to-delete: `rm vault/.cache/embeddings.db`. Rebuild on demand.
+
+**ChromaDB warning / vault empty**
+Workflow procede senza correlations (`source.correlations = []`).
+Esegui `second-brain index` per popolare.

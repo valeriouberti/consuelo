@@ -1,45 +1,58 @@
 # Second Brain — Project Context
 
 ## Progetto
-Workflow Python giornaliero che legge articoli web, transcript YouTube e
-luoghi Google Maps salvati, li correla con le note Obsidian esistenti tramite
-embeddings, e genera una nota di recap in `Daily/YYYY-MM-DD.md` con tag e
-wikilink.
+Workflow Python che processa contenuti salvati nella vault Obsidian
+(articoli, transcript YouTube, place Google Maps, PDF su Google Drive,
+RSS feed). Per ogni item: LLM classifica → assegna categoria + tag +
+summary, scrive nota arricchita in `Notes/<Categoria>/<slug>.md` con
+correlations alle note esistenti via embeddings.
+
+**Workflow corrente**: per-item classifier (articoli). Daily recap
+aggregato disabilitato. YouTube/PDF/feed/place gathered ma skip nel
+per-item flow (TODO: prossima iterazione).
 
 ## Stack
-- **Python 3.12** (`pyproject.toml`, hatchling build backend)
-- **LLM locale (test)**: Ollama — `llama3` + `nomic-embed-text`
-- **LLM cloud (produzione)**: OpenAI `gpt-4o-mini` via Chat Completions sincrone
-  (no Batch API: latenza fino a 24h incompatibile con cron giornaliero)
-- **Vector DB**: ChromaDB (locale) → Pinecone Serverless (cloud, futuro)
-- **Vault**: Obsidian `.md` con frontmatter YAML
-- **Scheduler**: cron locale (test) → GitHub Actions (produzione)
-- **Embedding cloud**: `text-embedding-3-small`
-- **Maps**: Google Maps Places API (opzionale, per arricchire metadati place)
+- **Python 3.12** (`pyproject.toml`, hatchling)
+- **LLM locale**: Ollama — `qwen2.5:14b` + `nomic-embed-text-8k`
+- **LLM cloud**: OpenAI `gpt-4o-mini` (sync Chat Completions, no Batch API)
+- **Async pipeline**: `asyncio` + `httpx` + `AsyncOpenAI`/`ollama.AsyncClient`
+- **Vector DB**: ChromaDB locale (Pinecone future, `vector.py` astratto)
+- **Embedding cache**: SQLite (`vault/.cache/embeddings.db`, sha256 key)
+- **Vault**: Obsidian `.md` + frontmatter YAML
+- **Sources extra**:
+  - Google Drive (PDF) via service account `google-api-python-client`
+  - RSS/Atom `feedparser` (top-N per feed, body fetch su entries headline-only)
+  - HTML→Markdown `markdownify` per articoli `.html`
+- **Scheduler**: cron locale → GitHub Actions (futuro)
 - **Tooling**: `ruff` (lint+format), `mypy`, `pytest`
 
 ## Struttura repo
 ```
 second-brain/
-├── second_brain/         # package Python
+├── second_brain/
 │   ├── __init__.py
-│   ├── __main__.py       # python -m second_brain
-│   ├── cli.py            # click group: run + index
-│   ├── config.py         # tutti gli os.environ.get() vivono qui
-│   ├── models.py         # Source dataclass + SourceType/StateSource
-│   ├── archive.py        # post-processing: move Inbox→Notes, Daily→YYYY/MM
-│   ├── state.py          # delta tracking (.state/*.json)
-│   ├── sources.py        # extractors: extract_article/youtube/place
-│   ├── llm.py            # embed_text + call_llm (ollama/openai dispatch)
-│   ├── vector.py         # ChromaDB open/query/upsert
-│   ├── rendering.py      # frontmatter + markdown daily note
-│   └── pipeline.py       # orchestrator daily + indexer Notes/
-├── prompts/              # template editabili (recap/place/tags), scritti in
-│                         #   inglese; il recap esce in IT o EN secondo la
-│                         #   lingua dell'input
-├── tests/                # pytest unit (state, rendering)
-│   └── conftest.py       # fixture `vault` con monkeypatch VAULT_PATH
-├── pyproject.toml        # PEP 621 + ruff + mypy + pytest config
+│   ├── __main__.py            # python -m second_brain
+│   ├── cli.py                 # click: run + ask + index
+│   ├── config.py              # tutti gli os.environ.get() vivono qui
+│   ├── models.py              # Source dataclass + status + category
+│   ├── archive.py             # existing_categories() + archive helpers
+│   ├── state.py               # delta tracking + filter_unseen
+│   ├── sources.py             # extractors + gather_pdf/feed_sources
+│   ├── drive.py               # Drive v3 client (list/download/move)
+│   ├── llm.py                 # sync+async embed/chat, retry, cost, cache
+│   ├── embedding_cache.py     # SQLite content-addressed cache
+│   ├── vector.py              # ChromaDB + upsert(kind="note"|"daily")
+│   ├── rendering.py           # render_classified_note + safe_filename
+│   └── pipeline.py            # async orchestrator + ask + index
+├── prompts/
+│   ├── classify.txt           # NEW: per-item classifier (JSON out)
+│   ├── ask.txt                # NEW: RAG over vault (markdown out)
+│   ├── recap.txt              # legacy Daily (non più chiamato)
+│   ├── place.txt              # legacy place recap
+│   └── tags.txt               # legacy
+├── tests/                     # pytest unit (state, rendering)
+├── feeds.example.json         # template RSS config
+├── pyproject.toml
 ├── .env.example
 ├── .gitignore
 ├── README.md
@@ -49,233 +62,282 @@ second-brain/
 ## Struttura vault Obsidian
 ```
 vault/
-├── Inbox/                      ← input transitorio (svuotato dopo processing)
-│   ├── articles/               ← .html (readability-lxml) OR .md (Web Clipper)
-│   ├── youtube/                ← .txt (URL nudo) OR .md (URL + frontmatter)
-│   └── places/                 ← .json con dati place Google Maps
-├── Daily/                      ← OUTPUT: recap generati
-│   ├── YYYY-MM-DD.md           ← Daily corrente (root)
-│   └── YYYY/MM/YYYY-MM-DD.md   ← Daily passati archiviati (auto)
-├── Notes/                      ← note personali da correlare
-│   ├── *.md                    ← le tue note (indicizzate in Chroma)
-│   ├── articles/YYYY-MM-DD/    ← articoli processati (auto, NON indicizzati)
-│   ├── youtube/YYYY-MM-DD/     ← transcript YouTube processati (auto)
-│   └── places/YYYY-MM-DD/      ← place JSON processati (auto)
-└── .state/                     ← stato interno workflow (non sincronizzare)
+├── Inbox/                          ← input transitorio
+│   ├── articles/                   ← .html (readability+markdownify) / .md (Web Clipper)
+│   ├── youtube/                    ← .txt o .md (TODO per-item flow)
+│   └── places/                     ← .json (TODO per-item flow)
+├── Notes/                          ← OUTPUT enriched + tue note personali
+│   ├── <Categoria>/                ← NEW: classificazione auto LLM (Tech, Finance, ...)
+│   │   └── <slug>.md
+│   ├── <Note personali>/           ← le tue note, indicizzate Chroma
+│   ├── articles/YYYY-MM-DD/        ← (legacy) archivio articoli — ESCLUSO indexing
+│   ├── youtube/YYYY-MM-DD/         ← (legacy) ESCLUSO indexing
+│   └── places/YYYY-MM-DD/          ← (legacy) ESCLUSO indexing
+├── Daily/                          ← (legacy, non più scritto da `run`)
+├── .config/
+│   └── feeds.json                  ← lista RSS feed (opzionale)
+├── .cache/
+│   └── embeddings.db               ← SQLite cache embeddings
+├── .chroma/                        ← Chroma persistent client
+└── .state/                         ← delta tracking
     ├── processed_articles.json
     ├── processed_youtube.json
     ├── processed_places.json
+    ├── processed_pdfs.json         ← Drive fileId
+    ├── processed_feeds.json        ← entry guid/link
     └── last_index.txt
 ```
 
-**Archiviazione automatica (post-processing)**
-Dopo ogni run con scrittura riuscita:
-1. I file Daily passati in `Daily/*.md` vengono spostati in
-   `Daily/{YYYY}/{MM}/{YYYY-MM-DD}.md` (solo file con stem data valida).
-2. I file processati in `Inbox/{kind}/` vengono spostati in
-   `Notes/{kind}/{run-date}/` per archiviazione cronologica.
-3. Su collisione di nome, viene aggiunto suffisso `_1`, `_2`, ...
-4. Le sottocartelle `Notes/{articles,youtube,places}/` sono ESCLUSE
-   dall'indexing Chroma (vedi `archive.EXCLUDED_NOTES_SUBDIRS`). Le tue note
-   personali "vere" devono stare direttamente sotto `Notes/` o in
-   sottocartelle a tema con nomi diversi (es. `Notes/Kubernetes/`).
+**Categoria libera ma con hint**: LLM riceve `existing_categories()` (lista
+top-level folder sotto `Notes/` escluse archive subdirs), riusa nomi
+esistenti preferenzialmente, propone nuovi solo se serve. Sanitization
+folder name in `rendering._safe_category` (max 80 char, no slash/special).
+
+**Archiviazione**: per articoli per-item, file Inbox viene **eliminato**
+(`unlink`) dopo write+state. No più archive cronologico per articoli.
+Legacy `archive_sources`/`archive_previous_daily` non più chiamati.
 
 ## Comandi principali
 ```bash
-pip install -e ".[dev]"             # setup
-second-brain index                  # indicizza Notes/ in ChromaDB
-second-brain index --incremental    # solo file mtime > last_index
-second-brain run                    # workflow giornaliero (ieri)
-second-brain run --date 2026-05-09  # riesegui su data specifica
-second-brain run --dry-run          # stampa su stdout, no scrittura/state
-second-brain run --mode cloud       # forza OpenAI (override LLM_MODE)
-python -m second_brain run          # equivalente senza entrypoint installato
-pytest                              # test
-ruff check . && ruff format .       # lint + format
+pip install -e ".[dev]"                # setup
+second-brain run                        # per-item: articles → Notes/<Categoria>/
+second-brain run --dry-run              # render su stdout, no scrittura
+second-brain run --mode cloud           # override OPENAI
+second-brain ask "query"                # RAG su Notes/ + Daily/
+second-brain ask "query" -k 15          # top-K vault entries
+second-brain index                      # indicizza Notes/ + Daily/ in Chroma
+second-brain index --incremental        # solo mtime > last_index
+second-brain index --no-daily           # skip Daily/, solo Notes/
+pytest                                  # test
+ruff check . && ruff format .           # lint + format
 ```
 
 ## Variabili d'ambiente
 ```
+# --- Core ---
 VAULT_PATH=./vault
-LLM_MODE=local|cloud          # default: local
-OLLAMA_MODEL=llama3
-OLLAMA_EMBED_MODEL=nomic-embed-text
+LLM_MODE=local|cloud                    # default: local
+LOG_LEVEL=DEBUG|INFO|WARNING            # default: INFO
+
+# --- Ollama (local mode) ---
+OLLAMA_MODEL=qwen2.5:14b
+OLLAMA_EMBED_MODEL=nomic-embed-text-8k
+OLLAMA_CHAT_NUM_CTX=8192
+OLLAMA_CHAT_NUM_PREDICT=2048
+OLLAMA_EMBED_NUM_CTX=8192
+
+# --- OpenAI (cloud mode) ---
 OPENAI_API_KEY=...
 OPENAI_MODEL=gpt-4o-mini
 OPENAI_EMBED_MODEL=text-embedding-3-small
-PINECONE_API_KEY=...
-PINECONE_INDEX=second-brain
+
+# --- Vector + embeddings ---
 CHROMA_PATH=./vault/.chroma
-GOOGLE_MAPS_API_KEY=...       # opzionale, solo se si usa Places API
-LOG_LEVEL=DEBUG|INFO|WARNING  # default: INFO
+EMBED_CHAR_LIMIT=20000                  # auto-shrink su context overflow
+
+# --- Async ---
+ASYNC_CONCURRENCY=                      # default 8 cloud, 1 local
+
+# --- Google Maps (opzionale, place reviews) ---
+GOOGLE_MAPS_API_KEY=
+
+# --- Google Drive (PDF source) ---
+GDRIVE_CREDENTIALS_JSON=/path/sa.json
+GDRIVE_INBOX_PDF_FOLDER_ID=
+GDRIVE_PROCESSED_PDF_FOLDER_ID=
+
+# --- RSS feeds ---
+FEEDS_CONFIG_PATH=                      # default $VAULT_PATH/.config/feeds.json
+FEED_MAX_ENTRIES_PER_FEED=3             # top-N per feed
+FEED_DAYS_BACK=-1                       # date window opzionale, -1 = disabled
+
+# --- Legacy ---
+PINECONE_API_KEY=
+PINECONE_INDEX=second-brain
 ```
 
-Tutti gli accessi a env vivono in `second_brain/config.py`. Non leggere
+Tutti gli accessi env vivono in `second_brain/config.py`. Non leggere
 `os.environ` altrove.
 
 ## Mappa moduli (orientamento rapido)
 | Cosa modificare | File |
 |-----------------|------|
 | Aggiungere/rinominare env var | `second_brain/config.py` |
-| Nuova sorgente (es. RSS) | `second_brain/sources.py` + entry in `EXTRACTORS` |
-| Cambiare formato output Daily | `second_brain/rendering.py` |
-| Logica orchestratore (gather→embed→enrich→commit) | `second_brain/pipeline.py` |
-| Backend LLM (nuovo provider) | `second_brain/llm.py` |
-| Vector store (es. Pinecone) | `second_brain/vector.py` |
+| Nuova sorgente (es. Reddit) | `second_brain/sources.py` + flow in `pipeline.gather_sources` |
+| Output formato nota classificata | `second_brain/rendering.py::render_classified_note` |
+| Orchestratore (gather→embed→classify→write) | `second_brain/pipeline.py` |
+| Backend LLM (nuovo provider) | `second_brain/llm.py` (sync + async + retry) |
+| Cache embedding | `second_brain/embedding_cache.py` |
+| Vector store (Pinecone) | `second_brain/vector.py` |
 | Logica dedup/state | `second_brain/state.py` |
-| Archiviazione post-processing | `second_brain/archive.py` |
+| Drive operations | `second_brain/drive.py` |
 | Comandi CLI | `second_brain/cli.py` |
-| Prompt sistema | `prompts/*.txt` (no rebuild) |
+| Prompt sistema | `prompts/*.txt` (no rebuild, `@lru_cache(8)` reload manuale) |
 
-## Formato nota di output (Daily/YYYY-MM-DD.md)
+## Formato nota classificata (Notes/<Categoria>/<slug>.md)
 ```markdown
 ---
-date: YYYY-MM-DD
-tags: [tag1, tag2, tag3]
-sources:
-  - type: article|youtube|place
-    title: "..."
-    url: "..."
+category: Tech
 correlations:
-  - "[[Notes/Nota Correlata]]"
+  - '[[Notes/Kubernetes/Basics]]'
+date_processed: '2026-05-11'
+source: https://www.ft.com/content/...
+tags:
+  - kubernetes
+  - operators
+  - platform-engineering
+title: Kubernetes Operators Pattern
 ---
 
-## Recap del YYYY-MM-DD
+## 📝 Summary _(generated 2026-05-11)_
+> Sintesi 3-5 frasi LLM-curate.
 
-### 📄 Titolo articolo
-> Sintesi in 3-5 frasi (italiano o inglese, vedi regola lingua).
-**Tag**: #tag1 #tag2
-**Connesso a**: [[Notes/Nota]]
+**Tag**: #kubernetes #operators #platform-engineering
+**Connesso a**: [[Notes/Kubernetes/Basics]]
 
-### 🎬 Titolo video YouTube
-> Sintesi in 3-5 frasi.
+---
 
-### 📍 Nome Luogo — Città
-> Sintesi 2-3 frasi: perché è interessante, categoria, note personali.
-**Tag**: #città #categoria #da-visitare
-**Connesso a**: [[Notes/Nota Correlata]]
-[Apri in Maps](https://maps.google.com/?cid=...)
+# Kubernetes Operators Pattern
 
-## 🔗 Connessioni tra i contenuti
-Paragrafo che descrive pattern comuni tra i contenuti di oggi.
+<body originale markdown (HTML→md via markdownify per .html, raw per .md)>
 ```
 
-## Formato file place in input (Inbox/places/*.json)
+## Delta tracking — State File
+Workflow **idempotente**. Ogni sorgente ha `vault/.state/processed_<source>.json`:
+
 ```json
-{
-  "source": "google_maps",
-  "place_id": "ChIJ...",
-  "name": "Osteria da Mario",
-  "category": "Ristorante italiano",
-  "address": "Via Colleoni 4, Bergamo",
-  "rating": 4.6,
-  "reviews_count": 312,
-  "url": "https://maps.google.com/?cid=...",
-  "notes_personali": "consigliato da Luca, buon risotto",
-  "saved_at": "2026-05-10T19:30:00"
-}
+{"processed": ["id1", "id2"], "last_run": "2026-05-11T15:33:42"}
 ```
 
-## Delta tracking — Strategia State File
-Il workflow è **idempotente**: può essere rilanciato più volte sulla stessa
-data senza duplicare output. Ogni sorgente ha il proprio state file in
-`vault/.state/`:
-
-```python
-# Struttura state file
-{
-  "processed": ["id1", "id2", ...],
-  "last_run": "2026-05-10T07:05:00"
-}
-```
-
-- **Articles**: ID = path relativo del file (es. `Inbox/articles/foo.html`
-  oppure `Inbox/articles/foo.md` per clipping Markdown)
-- **YouTube**: ID = URL del video (es. `https://youtube.com/watch?v=abc123`)
-- **Places**: ID = `place_id` dal JSON, fallback path relativo se assente
+- **Articles**: ID = vault-relative path (`Inbox/articles/foo.html`)
+- **YouTube**: ID = URL video
+- **Places**: ID = `place_id` (fallback: path)
+- **PDFs**: ID = Drive `fileId` (immutabile)
+- **Feeds**: ID = entry `guid`/`link`
 
 API pubblica (`second_brain/state.py`):
 ```python
-get_new_items(source_type, inbox_path) -> list[Path]
-mark_processed(source_type, ids)       -> None   # post-write
+get_new_items(source_type, inbox_path) -> list[Path]   # filesystem-based
+filter_unseen(source_type, ids)        -> list[str]    # generic (Drive/feed)
+mark_processed(source_type, ids)       -> None
 get_item_id(source_type, file_path)    -> str
 reset_state(source_type)               -> None
 ```
 
-### Fallback mtime (prima run)
-Se lo state file non esiste, usa `mtime == ieri` come bootstrap iniziale,
-poi crea lo state file con tutti gli ID trovati.
+State aggiornato SOLO dopo write riuscito.
 
-### `.state/` e `.gitignore`
-Il folder `.state/` NON va committato nel repo né sincronizzato da Obsidian
-Sync. Già in `.gitignore`. Aggiungerlo anche all'exclude list di Obsidian
-Sync.
+### `.state/`, `.cache/`, `.chroma/` e `.gitignore`
+Tutte gitignored ed escluse da Obsidian Sync. Stato locale macchina.
+
+## Pipeline async
+```
+asyncio.run(_pipeline())
+  ├─ gather_sources(target_date=None)         [parallel]
+  │   ├─ to_thread(_gather_file_sources)     ── articles/youtube/places
+  │   ├─ to_thread(gather_pdf_sources)        ── Drive PDFs
+  │   └─ gather_feed_sources(target_date)     ── RSS (httpx + Semaphore)
+  ├─ embed_sources(sources)                   [Semaphore-bounded async]
+  │   └─ embed_text_safe_async() × N          (cache hit → 0 API call)
+  └─ classify_sources(sources)                [Semaphore-bounded async]
+      └─ per source:
+          ├─ to_thread(vector.query_correlations)
+          └─ call_llm_async() → JSON {category, summary, tags, correlations}
+```
+
+Concurrency cap: `ASYNC_CONCURRENCY` env (8 cloud, 1 local).
+Retry: `_retry_async` con exp backoff su transient (timeout, 429, 5xx).
+
+## Cost tracking (cloud only)
+Module-level counter in `llm.py`. `reset_usage()` a inizio run, `usage_summary()`
+ritorna `{prompt_tokens, completion_tokens, embed_tokens, cache_hits,
+estimated_usd}`. CLI logga summary fine run.
+
+Pricing in `_PRICING_PER_1M_USD` — sync manuale con
+https://openai.com/api/pricing/.
+
+## Embedding cache
+`vault/.cache/embeddings.db` SQLite. Key = `sha256(model_namespace || text)`.
+Namespace = `cloud:text-embedding-3-small` vs `local:nomic-embed-text-8k` —
+cambio modello = cache separata, no stale.
+
+Float32 raw bytes via `struct.pack`. Encoding/decoding lossless per le
+nostre dim (1536). Safe-to-delete: rebuild su miss.
+
+## RAG `ask`
+- Embed query → Chroma top-K (default 8) → builds context block
+  `[i] path/title/kind/tags/excerpt` → `call_llm_text` (prompt
+  `ask.txt`, no JSON mode) → markdown answer con wiki-link citations.
+- Vault sources: Notes/ + Daily/ (indicizzati con `kind` metadata).
+- Output stdout, log cost/cache stats su stderr.
 
 ## Regola lingua (recap + tag)
-Output in italiano o inglese, scelto dalla lingua del contenuto in input:
-- Contenuto IT → recap + tag IT
-- Contenuto EN → recap + tag EN
+Output in italiano o inglese, scelto dalla lingua dell'input:
+- Contenuto IT → recap IT + tag IT
+- Contenuto EN → recap EN + tag EN
 - Altra lingua → fallback EN
 
-Recap e tag devono coincidere nella lingua. Logica codificata nei prompt
-(`prompts/recap.txt`, `prompts/tags.txt`). Place recap resta in italiano
-(input strutturato locale, prompt `prompts/place.txt`).
-
-I prompt di sistema sono scritti in inglese perché i modelli (qwen, llama)
-seguono meglio le istruzioni in inglese e tendono a "trascinare" l'output
-nella lingua del system prompt. Mantenere il prompt in inglese + direttiva
-esplicita sulla lingua dell'output massimizza la compliance bilingue.
+Prompt scritti in inglese (LLM seguono meglio istruzioni EN), con direttiva
+esplicita sulla lingua output.
 
 ## Regole critiche
-- Tag SEMPRE in kebab-case lowercase (`platform-engineering` non
-  `PlatformEngineering`); normalizzazione in `rendering.kebab()`
-- Wikilink usano il path relativo esatto della nota in `Notes/`, senza
-  estensione `.md`
-- Output primario SOLO in `vault/Daily/`
-- Se un file Daily esiste già, **appendere** il body senza rigenerare il
-  frontmatter (vedi `rendering.write_daily`)
-- Logging su `stderr` (configurato in `config.configure_logging`),
-  output file su `stdout` (per `--dry-run`)
+- Tag SEMPRE kebab-case lowercase (`platform-engineering`), normalizzati in
+  `rendering.kebab()`
+- Wikilink: path relativo Notes/ senza estensione `.md`
+- Output nota per-item: `Notes/<Categoria>/<slug>.md` (slug via
+  `rendering.safe_filename`, max 100c, unicode-safe, collision → `_1`,`_2`)
+- Categoria sanitized: no `/\:*?"<>|`, max 80c, fallback `Uncategorized`
+- Logging su `stderr`; output file/answer su `stdout` (per `--dry-run` / `ask`)
 - Zero `print()` nel codice: solo `logger.*`
-- Gestire `KeyboardInterrupt` e scrivere comunque file parziale
-- Lo state file va aggiornato SOLO se `write_daily` non lancia eccezioni
-- Archiviazione file sorgente: solo DOPO `commit_state`. Se il move fallisce
-  (permission, target esistente), si logga warning e si prosegue — lo state
-  resta corretto, l'utente può spostare a mano
-- Archiviazione Daily passati: PRIMA di `write_daily`. Sicura: usa `rename`
-  atomico, salta i file di destinazione già esistenti
-- Le sottocartelle `Notes/{articles,youtube,places}/` NON vanno indicizzate
-  come note personali (filtro in `pipeline._is_excluded`)
-- Max 5 tag per fonte, max 5 correlations per fonte
+- State aggiornato SOLO dopo write riuscito (no orphan state)
+- File Inbox eliminato (`unlink`) DOPO state commit, solo per per-item flow
+- Max 7 tag per fonte (era 5, alzato per classify), max 5 correlations
+- Categorie esistenti: scan top-level Notes/ folder, escluse archive subdirs
 
 ## Gotchas
-- `youtube-transcript-api` restituisce lista di dict `{text, start, duration}`
-  → joinali con spazio
-- `readability-lxml` fallisce su pagine con JS-rendering → fallback al
-  testo grezzo
-- Articoli Markdown (`.md`): bypass readability, body usato direttamente.
-  Metadata frontmatter opzionali: `title`, `source`/`url` (URL canonico)
-- YouTube `.md`: l'URL viene estratto via regex dal body (o frontmatter).
-  Metadata letti: `title`, `channel`, `published`, `duration`, `thumbnail`,
-  `description` — finiscono in `Source.extra` per uso futuro
-- YouTube transcript API: usare `YouTubeTranscriptApi().fetch(video_id, ...)`
-  (API v1.x). Il legacy `get_transcript` non esiste più
-- ChromaDB usa `upsert` non `add` per evitare duplicati su re-indicizzazione
+- `youtube-transcript-api` v1.x: usa `YouTubeTranscriptApi().fetch(video_id)`,
+  no più `get_transcript` legacy
+- `readability-lxml` su pagine JS-rendered → fallback raw text
+- Articoli `.md`: bypass readability, body markdown usato direttamente
+- Articoli `.html`: readability `summary()` → `markdownify` (preserva
+  heading/list/link)
+- `_html_to_markdown` fallback a `text_content()` se markdownify mancante
+- YouTube `.md`: URL via regex dal body o frontmatter; metadati
+  `channel/published/duration/thumbnail/description` → `Source.extra`
+- ChromaDB usa `upsert` (no `add`) per evitare duplicati su re-index
 - Ollama deve girare prima del workflow: `ollama serve &`
-- Frontmatter YAML: usare `python-frontmatter`, mai parsing manuale
-- Path Obsidian nei wikilink NON includono `.md`
-- Places senza `place_id`: path file come ID nello state
-- Google Maps Places API richiede fatturazione attiva anche nel free tier
-- LLM JSON-mode: forzato via `format="json"` (Ollama) e
-  `response_format={"type":"json_object"}` (OpenAI); fallback parser estrae
-  oggetto tra prima `{` e ultima `}`
+- Ollama async = serializza (1 model in memoria). `ASYNC_CONCURRENCY=1`
+  local è ottimo (parallelizzare = overhead senza gain)
+- Frontmatter YAML: SEMPRE `python-frontmatter`, mai parsing manuale
+- Path Obsidian nei wikilink: NO estensione `.md`
+- Places senza `place_id`: path come ID nello state
+- Google Drive: service account NON ha quota personale, cartelle DEVONO
+  essere condivise come Editor con `client_email` dal JSON SA
+- Drive `fileId` immutabile, sopravvive rename → ottimo state ID
+- LLM JSON-mode: forzato in `call_llm`/`call_llm_async`
+  (`format="json"` Ollama, `response_format={"type":"json_object"}` OpenAI).
+  Per markdown output usa `call_llm_text` (no JSON constraint).
+- `parse_llm_json` fallback: estrae oggetto tra prima `{` e ultima `}`
+- Feed: top-N per feed (default 3), poi filter_unseen via state — combinano
+- Feed entry senza body inline (TLDR): fetch URL → `markdownify`-strip → body
+- httpx in `_fetch_url_body_async`: `follow_redirects=True` essenziale
+  (es. tldr.tech/webdev redirect 308)
+- Embedding cache: namespace per model evita stale su cambio modello
+- Cache thread-safe via `_lock` (per `to_thread` async paths)
+- Retry: 3 attempts exp backoff 1s/2s/4s, SOLO su transient (timeout/429/5xx).
+  Errori permanenti (auth, bad request) propagano subito.
+- 3rd party logger silenziati in `configure_logging`: readability, httpx,
+  httpcore, urllib3 → WARNING
 
 ## Anti-pattern da evitare
 - Non usare `os.system()` — usare `subprocess.run()`
-- Non hardcodare path — tutto via `VAULT_PATH` env var (`config.vault_path()`)
-- Non saltare il deduplication delle note già processate
-- Non generare più di 5 tag per fonte
+- Non hardcodare path — tutto via `VAULT_PATH` (`config.vault_path()`)
+- Non saltare il deduplication (state filter)
+- Non generare più di 7 tag per fonte
 - Non inventare wikilink verso note inesistenti
-- Non aggiornare lo state file se la scrittura della nota ha fallito
+- Non aggiornare state file se write ha fallito
 - Non leggere `os.environ` fuori da `config.py`
-- Non aggiungere print() — solo `logging`
+- Non aggiungere `print()` — solo `logging`
+- Non importare `openai`/`ollama` al top-level (lazy import per minimizzare
+  startup)
+- Non riusare coroutine attraverso retry — `_retry_async` riceve factory
+- Non scrivere Daily aggregato — workflow è per-item ora
