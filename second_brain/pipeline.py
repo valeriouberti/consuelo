@@ -151,6 +151,65 @@ async def _enrich_async(source: Source, related: list[dict]) -> None:
     source.correlations = [str(c).strip() for c in correlations if c][:5]
 
 
+def _build_classify_message(source: Source, related: list[dict], categories: list[str]) -> str:
+    related_block = (
+        "\n".join(f"- [[{r['path']}]] ({r['title']}): {r['preview']}" for r in related)
+        or "(no related notes)"
+    )
+    cats_block = "\n".join(f"- {c}" for c in categories) or "(none yet)"
+    return (
+        f"ARTICLE TITLE: {source.title}\n\n"
+        f"ARTICLE CONTENT:\n{source.content}\n\n"
+        f"RELATED VAULT NOTES:\n{related_block}\n\n"
+        f"CATEGORIES IN USE:\n{cats_block}\n"
+    )
+
+
+async def _classify_one(source: Source, related: list[dict], categories: list[str]) -> None:
+    system_prompt = load_prompt("classify.txt")
+    user_msg = _build_classify_message(source, related, categories)
+    try:
+        raw = await call_llm_async(system_prompt, user_msg)
+        payload = parse_llm_json(raw)
+    except Exception:
+        logger.error("classify LLM call failed for %s:\n%s", source.title, traceback.format_exc())
+        source.status = "llm_fail"
+        source.category = "Uncategorized"
+        source.recap = "_[Classify error]_"
+        return
+    source.category = (payload.get("category") or "Uncategorized").strip() or "Uncategorized"
+    source.recap = (payload.get("summary") or "").strip() or "_[Empty summary]_"
+    tags = [kebab(t) for t in (payload.get("tags") or []) if t]
+    source.tags = [t for t in tags if t][:7]
+    correlations = payload.get("correlations") or []
+    source.correlations = [str(c).strip() for c in correlations if c][:5]
+
+
+async def classify_sources(sources: list[Source]) -> None:
+    """Per-source LLM classification: category + summary + tags + correlations.
+
+    Replaces ``enrich_sources`` for the per-item workflow. Each source's
+    enriched fields are filled in place; ``source.category`` drives the
+    destination folder in ``write_classified_note``.
+    """
+    from second_brain.archive import existing_categories
+
+    collection = vector.open_collection()
+    categories = existing_categories()
+    sem = asyncio.Semaphore(async_concurrency())
+
+    async def one(s: Source) -> None:
+        async with sem:
+            related = (
+                await asyncio.to_thread(vector.query_correlations, collection, s.embedding)
+                if s.embedding
+                else []
+            )
+            await _classify_one(s, related, categories)
+
+    await asyncio.gather(*(one(s) for s in sources))
+
+
 async def enrich_sources(sources: list[Source]) -> None:
     """Vector-correlate + LLM-enrich every source concurrently.
 

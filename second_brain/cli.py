@@ -7,27 +7,25 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import click
 from dotenv import load_dotenv
 
-from second_brain.archive import archive_previous_daily, archive_sources
 from second_brain.config import configure_logging, llm_mode
 from second_brain.llm import reset_usage, usage_summary
 from second_brain.pipeline import (
     ask as ask_pipeline,
 )
 from second_brain.pipeline import (
+    classify_sources,
     commit_state,
     embed_sources,
-    enrich_sources,
     gather_sources,
     index_notes,
     log_status_report,
 )
-from second_brain.rendering import render_daily, write_daily
-from second_brain.sources import archive_pdf_sources
+from second_brain.rendering import render_classified_note, write_classified_note
 
 logger = logging.getLogger(__name__)
 
@@ -40,78 +38,89 @@ def cli() -> None:
 
 
 @cli.command()
-@click.option("--date", "date_str", help="Target date YYYY-MM-DD (default: yesterday).")
-@click.option("--dry-run", is_flag=True, help="Print to stdout; do not write file or update state.")
+@click.option(
+    "--dry-run", is_flag=True, help="Print rendered notes to stdout; do not write or update state."
+)
 @click.option(
     "--mode",
     type=click.Choice(["local", "cloud"]),
     default=None,
     help="Override LLM_MODE for this run.",
 )
-def run(date_str: str | None, dry_run: bool, mode: str | None) -> None:
-    """Process new inbox items and write the daily recap."""
+def run(dry_run: bool, mode: str | None) -> None:
+    """Per-article processing: classify, summarize, route into Notes/<Category>/.
+
+    Picks up every new file in Inbox/articles/, runs LLM classification +
+    summary, writes the enriched note in Notes/<Category>/<slug>.md, and
+    consumes the original. Other source types (YouTube, PDF, feed, place)
+    are gathered but currently no-ops in the per-item flow — they will
+    follow in a subsequent iteration.
+    """
     if mode:
         os.environ["LLM_MODE"] = mode
 
-    if date_str:
-        try:
-            target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
-        except ValueError:
-            logger.error("invalid --date format, expected YYYY-MM-DD")
-            sys.exit(2)
-    else:
-        target_date = (datetime.now() - timedelta(days=1)).date()
-    date_iso = target_date.isoformat()
-
-    logger.info("target date: %s (mode=%s, dry_run=%s)", date_iso, llm_mode(), dry_run)
+    logger.info("mode=%s, dry_run=%s", llm_mode(), dry_run)
     reset_usage()
 
     async def _pipeline():
-        sources = await gather_sources(target_date=target_date)
+        sources = await gather_sources(target_date=None)
         if not sources:
             return sources
         await embed_sources(sources)
-        await enrich_sources(sources)
+        await classify_sources(sources)
         return sources
 
-    sources = []
+    sources: list = []
     try:
-        sources = asyncio.run(_pipeline())
-        if not sources:
-            logger.info("no new sources to process — nothing to do")
-            return
+        sources = asyncio.run(_pipeline()) or []
     except KeyboardInterrupt:
-        logger.warning("interrupted — writing partial output")
+        logger.warning("interrupted — partial state, nothing committed")
+        return
 
-    rendered = render_daily(date_iso, sources)
+    article_sources = [s for s in sources if s.type == "article"]
+    other_sources = [s for s in sources if s.type != "article"]
+    if other_sources:
+        logger.warning(
+            "skipping %d non-article source(s) — per-item flow not implemented yet",
+            len(other_sources),
+        )
+
+    if not article_sources:
+        logger.info("no new articles to process — nothing to do")
+        return
+
+    today_iso = datetime.now().date().isoformat()
 
     if dry_run:
-        sys.stdout.write(rendered)
+        for s in article_sources:
+            sys.stdout.write(render_classified_note(s, today_iso))
+            sys.stdout.write("\n\n")
         sys.stdout.flush()
         return
 
-    archived_daily = archive_previous_daily(date_iso)
-    if archived_daily:
-        logger.info("archived %d previous daily note(s)", archived_daily)
+    written: list[tuple] = []
+    for s in article_sources:
+        try:
+            out_path = write_classified_note(s)
+        except OSError as exc:
+            logger.error("write failed for %s: %s", s.title, exc)
+            s.status = "llm_fail"
+            continue
+        logger.info("wrote %s [%s]", out_path, s.category)
+        written.append((s, out_path))
 
-    try:
-        out_path = write_daily(date_iso, rendered)
-        logger.info("wrote %s", out_path)
-    except OSError as exc:
-        logger.error("write failed — state NOT updated: %s", exc)
-        sys.exit(1)
+    if written:
+        commit_state([s for s, _ in written])
+        for s, _ in written:
+            src = s.source_path
+            if src is not None and src.exists():
+                try:
+                    src.unlink()
+                    logger.info("consumed inbox file %s", src.name)
+                except OSError as exc:
+                    logger.warning("could not delete inbox %s: %s", src, exc)
 
-    commit_state(sources)
-
-    moved = archive_sources(sources, date_iso)
-    if moved:
-        logger.info("archived %d processed source file(s)", moved)
-
-    moved_pdfs = archive_pdf_sources(sources)
-    if moved_pdfs:
-        logger.info("archived %d processed PDF(s) on Drive", moved_pdfs)
-
-    log_status_report(sources)
+    log_status_report(article_sources)
 
     u = usage_summary()
     if u["cache_hits"]:
@@ -130,7 +139,9 @@ def run(date_str: str | None, dry_run: bool, mode: str | None) -> None:
 
 @cli.command()
 @click.argument("query")
-@click.option("-k", "top_k", default=8, show_default=True, help="How many vault entries to retrieve.")
+@click.option(
+    "-k", "top_k", default=8, show_default=True, help="How many vault entries to retrieve."
+)
 @click.option(
     "--mode",
     type=click.Choice(["local", "cloud"]),

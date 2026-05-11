@@ -26,3 +26,4 @@ class Source:
     correlations: list[str] = field(default_factory=list)
     extra: dict = field(default_factory=dict)
     status: SourceStatus = "ok"
+    category: str = ""  # destination folder under Notes/, assigned by classify step

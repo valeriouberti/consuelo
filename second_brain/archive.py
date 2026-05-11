@@ -22,6 +22,25 @@ logger = logging.getLogger(__name__)
 EXCLUDED_NOTES_SUBDIRS: frozenset[str] = frozenset({"articles", "youtube", "places"})
 
 
+def existing_categories() -> list[str]:
+    """Top-level folder names under ``Notes/`` that look like user categories.
+
+    Excludes the archive subdirs we manage ourselves (``articles/``,
+    ``youtube/``, ``places/``, ``pdfs/``) and dotfiles. Used as a hint
+    to the classify LLM so it reuses category names already in the
+    vault instead of inventing near-duplicates.
+    """
+    notes_dir = Path(vault_path()) / "Notes"
+    if not notes_dir.exists():
+        return []
+    skip = EXCLUDED_NOTES_SUBDIRS | {"pdfs"}
+    return sorted(
+        p.name
+        for p in notes_dir.iterdir()
+        if p.is_dir() and p.name not in skip and not p.name.startswith(".")
+    )
+
+
 def _unique_target(target: Path) -> Path:
     """Avoid clobbering existing files: append numeric suffix if needed."""
     if not target.exists():

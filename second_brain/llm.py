@@ -89,7 +89,11 @@ def usage_summary() -> dict:
 
 def _cache_model_key() -> str:
     """Identifier for the active embedding model — namespace for cache keys."""
-    return f"cloud:{openai_embed_model()}" if llm_mode() == "cloud" else f"local:{ollama_embed_model()}"
+    return (
+        f"cloud:{openai_embed_model()}"
+        if llm_mode() == "cloud"
+        else f"local:{ollama_embed_model()}"
+    )
 
 
 # ---------- retry ----------

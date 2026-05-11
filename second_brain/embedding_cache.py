@@ -87,10 +87,14 @@ def get(text: str, model: str) -> list[float] | None:
         return None
     try:
         with _lock:
-            row = _connection().execute(
-                "SELECT dim, vector FROM embeddings WHERE key = ?",
-                (_key(text, model),),
-            ).fetchone()
+            row = (
+                _connection()
+                .execute(
+                    "SELECT dim, vector FROM embeddings WHERE key = ?",
+                    (_key(text, model),),
+                )
+                .fetchone()
+            )
     except sqlite3.Error as exc:
         logger.warning("embedding cache read failed: %s", exc)
         return None
@@ -123,9 +127,11 @@ def stats() -> dict:
     """Counts + size for the end-of-run summary."""
     try:
         with _lock:
-            row = _connection().execute(
-                "SELECT COUNT(*), COALESCE(SUM(LENGTH(vector)), 0) FROM embeddings"
-            ).fetchone()
+            row = (
+                _connection()
+                .execute("SELECT COUNT(*), COALESCE(SUM(LENGTH(vector)), 0) FROM embeddings")
+                .fetchone()
+            )
     except sqlite3.Error:
         return {"rows": 0, "bytes": 0}
     rows, byts = row if row else (0, 0)

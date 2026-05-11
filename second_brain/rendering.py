@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import date
 from pathlib import Path
 
 import frontmatter
@@ -133,6 +134,99 @@ def render_daily(date: str, sources: list[Source]) -> str:
         body_lines.append("")
     post = frontmatter.Post(content="\n".join(body_lines), **meta)
     return frontmatter.dumps(post) + "\n"
+
+
+# ---------- per-item classified notes ----------
+
+_SAFE_FILENAME_RE = re.compile(r"[^\w\s\-]", flags=re.UNICODE)
+_DASHES_RE = re.compile(r"[\s_]+")
+
+
+def safe_filename(title: str, max_len: int = 100) -> str:
+    """Turn an arbitrary title into a filesystem-safe stem.
+
+    Keeps unicode letters and digits, collapses whitespace/underscores
+    to single dashes, strips leading/trailing dashes, and caps the
+    length. ``"untitled"`` fallback so we never return an empty string.
+    """
+    s = _SAFE_FILENAME_RE.sub("", title)
+    s = _DASHES_RE.sub("-", s).strip("-")
+    s = s[:max_len].strip("-")
+    return s or "untitled"
+
+
+def _safe_category(category: str) -> str:
+    """Sanitize an LLM-proposed category for use as a folder name."""
+    c = re.sub(r"[\\/:*?\"<>|\r\n\t]", " ", category).strip()
+    c = re.sub(r"\s+", " ", c)
+    return c[:80] or "Uncategorized"
+
+
+def render_classified_note(source: Source, today_iso: str) -> str:
+    """Build the final Markdown for a classified article.
+
+    Frontmatter carries every field useful for Obsidian indexing
+    (title, source, date, category, tags, correlations). The body
+    starts with a generated summary section and ends with the original
+    content separated by a horizontal rule so the reader sees the
+    LLM-curated context first, then the full source.
+    """
+    title = source.title or "Untitled"
+    fm: dict = {
+        "title": title,
+        "source": source.url,
+        "date_processed": today_iso,
+        "category": _safe_category(source.category),
+        "tags": list(source.tags),
+    }
+    if source.correlations:
+        fm["correlations"] = [f"[[{_strip_md_ext(c)}]]" for c in source.correlations]
+
+    body_lines = [f"## 📝 Summary _(generated {today_iso})_", _blockquote(source.recap), ""]
+    if source.tags:
+        body_lines.append("**Tag**: " + " ".join(f"#{t}" for t in source.tags))
+    if source.correlations:
+        wikilinks = " ".join(f"[[{_strip_md_ext(c)}]]" for c in source.correlations)
+        body_lines.append(f"**Connesso a**: {wikilinks}")
+    body_lines.append("")
+    body_lines.append("---")
+    body_lines.append("")
+    body_lines.append(source.content.strip())
+    body_lines.append("")
+
+    post = frontmatter.Post(content="\n".join(body_lines), **fm)
+    return frontmatter.dumps(post) + "\n"
+
+
+def _unique_target(target: Path) -> Path:
+    if not target.exists():
+        return target
+    stem, suffix = target.stem, target.suffix
+    i = 1
+    while True:
+        cand = target.with_name(f"{stem}_{i}{suffix}")
+        if not cand.exists():
+            return cand
+        i += 1
+
+
+def write_classified_note(source: Source) -> Path:
+    """Write the rendered note under ``Notes/<Category>/<safe-title>.md``.
+
+    Returns the resulting path. Creates the category folder if needed,
+    appends ``_1``/``_2`` on filename collision. Caller is responsible
+    for deleting the original Inbox file (we don't touch it here so a
+    write failure can't strand input data).
+    """
+    today_iso = date.today().isoformat()
+    rendered = render_classified_note(source, today_iso)
+    category = _safe_category(source.category)
+    out_dir = vault_path() / "Notes" / category
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stem = safe_filename(source.title)
+    target = _unique_target(out_dir / f"{stem}.md")
+    target.write_text(rendered, encoding="utf-8")
+    return target
 
 
 def write_daily(date: str, rendered: str) -> Path:

@@ -54,9 +54,28 @@ def _extract_article_markdown(path: Path) -> Source | None:
     )
 
 
+def _html_to_markdown(html: str) -> str:
+    """Convert ``html`` (already content-extracted by readability) to Markdown.
+
+    ``markdownify`` preserves headings, lists, links, and emphasis — much
+    more useful in Obsidian than ``text_content()`` plain text. Falls
+    back to ``lxml.text_content`` if markdownify isn't installed.
+    """
+    try:
+        from markdownify import markdownify  # type: ignore
+
+        return markdownify(html, heading_style="ATX", strip=["script", "style"]).strip()
+    except ImportError:
+        try:
+            from lxml import html as lxml_html  # type: ignore
+
+            return lxml_html.fromstring(html).text_content().strip()
+        except Exception:
+            return html
+
+
 def _extract_article_html(path: Path) -> Source | None:
     try:
-        from lxml import html as lxml_html  # type: ignore
         from readability import Document  # type: ignore
     except ImportError as exc:
         logger.error("readability-lxml not installed: %s", exc)
@@ -69,7 +88,8 @@ def _extract_article_html(path: Path) -> Source | None:
     try:
         doc = Document(raw)
         title = doc.short_title() or path.stem
-        text = lxml_html.fromstring(doc.summary()).text_content().strip()
+        summary_html = doc.summary()
+        text = _html_to_markdown(summary_html)
     except Exception as exc:
         logger.warning("readability failed for %s (%s) — using raw text", path, exc)
         title, text = path.stem, raw
