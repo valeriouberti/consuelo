@@ -151,15 +151,35 @@ async def _enrich_async(source: Source, related: list[dict]) -> None:
     source.correlations = [str(c).strip() for c in correlations if c][:5]
 
 
+CLASSIFY_INPUT_MAX_CHARS = 12000  # leaves room for prompt + JSON completion under 8k ctx
+
+
 def _build_classify_message(source: Source, related: list[dict], categories: list[str]) -> str:
+    """Build the user-message block for the classify prompt.
+
+    The article/transcript body is truncated to ``CLASSIFY_INPUT_MAX_CHARS``
+    so that a 30k-char YouTube transcript still fits an 8k-context local
+    LLM. We append a marker so the model knows the truncation happened
+    and can adjust expectations (still enough to classify accurately).
+    """
+    content = source.content
+    if len(content) > CLASSIFY_INPUT_MAX_CHARS:
+        content = content[:CLASSIFY_INPUT_MAX_CHARS] + "\n\n[…content truncated for classification]"
     related_block = (
         "\n".join(f"- [[{r['path']}]] ({r['title']}): {r['preview']}" for r in related)
         or "(no related notes)"
     )
     cats_block = "\n".join(f"- {c}" for c in categories) or "(none yet)"
+    type_label = {
+        "article": "ARTICLE",
+        "youtube": "YOUTUBE VIDEO TRANSCRIPT",
+        "pdf": "PDF ARTICLE",
+        "feed": "FEED ENTRY",
+        "place": "PLACE",
+    }.get(source.type, "CONTENT")
     return (
-        f"ARTICLE TITLE: {source.title}\n\n"
-        f"ARTICLE CONTENT:\n{source.content}\n\n"
+        f"{type_label} TITLE: {source.title}\n\n"
+        f"{type_label} CONTENT:\n{content}\n\n"
         f"RELATED VAULT NOTES:\n{related_block}\n\n"
         f"CATEGORIES IN USE:\n{cats_block}\n"
     )

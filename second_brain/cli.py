@@ -77,36 +77,39 @@ def run(dry_run: bool, mode: str | None) -> None:
         logger.warning("interrupted — partial state, nothing committed")
         return
 
-    article_sources = [s for s in sources if s.type == "article"]
-    other_sources = [s for s in sources if s.type != "article"]
-    if other_sources:
+    SUPPORTED_TYPES = {"article", "youtube"}
+    processable = [s for s in sources if s.type in SUPPORTED_TYPES]
+    skipped = [s for s in sources if s.type not in SUPPORTED_TYPES]
+    if skipped:
+        skipped_types = sorted({s.type for s in skipped})
         logger.warning(
-            "skipping %d non-article source(s) — per-item flow not implemented yet",
-            len(other_sources),
+            "skipping %d source(s) of types %s — per-item flow not implemented yet",
+            len(skipped),
+            skipped_types,
         )
 
-    if not article_sources:
-        logger.info("no new articles to process — nothing to do")
+    if not processable:
+        logger.info("no new processable sources — nothing to do")
         return
 
     today_iso = datetime.now().date().isoformat()
 
     if dry_run:
-        for s in article_sources:
+        for s in processable:
             sys.stdout.write(render_classified_note(s, today_iso))
             sys.stdout.write("\n\n")
         sys.stdout.flush()
         return
 
     written: list[tuple] = []
-    for s in article_sources:
+    for s in processable:
         try:
             out_path = write_classified_note(s)
         except OSError as exc:
             logger.error("write failed for %s: %s", s.title, exc)
             s.status = "llm_fail"
             continue
-        logger.info("wrote %s [%s]", out_path, s.category)
+        logger.info("wrote %s [%s, %s]", out_path, s.type, s.category)
         written.append((s, out_path))
 
     if written:
@@ -120,7 +123,7 @@ def run(dry_run: bool, mode: str | None) -> None:
                 except OSError as exc:
                     logger.warning("could not delete inbox %s: %s", src, exc)
 
-    log_status_report(article_sources)
+    log_status_report(processable)
 
     u = usage_summary()
     if u["cache_hits"]:

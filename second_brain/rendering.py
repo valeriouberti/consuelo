@@ -162,14 +162,54 @@ def _safe_category(category: str) -> str:
     return c[:80] or "Uncategorized"
 
 
+_YOUTUBE_META_FIELDS = ("channel", "published", "duration", "thumbnail")
+
+
+def _render_youtube_info_block(source: Source) -> list[str]:
+    """Bullet list of YouTube metadata, plus an inline thumbnail when present."""
+    extra = source.extra or {}
+    lines: list[str] = ["## 🎬 Video Info"]
+    if extra.get("channel"):
+        lines.append(f"- **Channel**: {extra['channel']}")
+    if extra.get("published"):
+        lines.append(f"- **Published**: {extra['published']}")
+    if extra.get("duration"):
+        lines.append(f"- **Duration**: {extra['duration']}")
+    lines.append(f"- [Watch on YouTube]({source.url})")
+    thumb = extra.get("thumbnail")
+    if thumb:
+        lines.append("")
+        lines.append(f"![]({thumb})")
+    return lines
+
+
+def _render_transcript_callout(transcript: str) -> list[str]:
+    """Wrap a long transcript in an Obsidian collapsible callout.
+
+    ``> [!info]- ...`` is the foldable variant (note the trailing dash),
+    so the wall of text doesn't dominate the note by default.
+    """
+    lines = ["> [!info]- Full transcript"]
+    for paragraph in transcript.split("\n\n"):
+        paragraph = paragraph.strip()
+        if not paragraph:
+            continue
+        for ln in paragraph.splitlines():
+            lines.append(f"> {ln}".rstrip())
+        lines.append(">")
+    if lines[-1] == ">":
+        lines.pop()
+    return lines
+
+
 def render_classified_note(source: Source, today_iso: str) -> str:
-    """Build the final Markdown for a classified article.
+    """Build the final Markdown for a classified item.
 
     Frontmatter carries every field useful for Obsidian indexing
     (title, source, date, category, tags, correlations). The body
-    starts with a generated summary section and ends with the original
-    content separated by a horizontal rule so the reader sees the
-    LLM-curated context first, then the full source.
+    starts with the generated summary, then a per-type section: for
+    ``article`` the body is the original Markdown; for ``youtube`` a
+    metadata block plus a foldable transcript callout.
     """
     title = source.title or "Untitled"
     fm: dict = {
@@ -182,6 +222,14 @@ def render_classified_note(source: Source, today_iso: str) -> str:
     if source.correlations:
         fm["correlations"] = [f"[[{_strip_md_ext(c)}]]" for c in source.correlations]
 
+    if source.type == "youtube":
+        extra = source.extra or {}
+        for k in _YOUTUBE_META_FIELDS:
+            if extra.get(k):
+                fm[k] = extra[k]
+        if extra.get("video_id"):
+            fm["video_id"] = extra["video_id"]
+
     body_lines = [f"## 📝 Summary _(generated {today_iso})_", _blockquote(source.recap), ""]
     if source.tags:
         body_lines.append("**Tag**: " + " ".join(f"#{t}" for t in source.tags))
@@ -191,7 +239,15 @@ def render_classified_note(source: Source, today_iso: str) -> str:
     body_lines.append("")
     body_lines.append("---")
     body_lines.append("")
-    body_lines.append(source.content.strip())
+
+    if source.type == "youtube":
+        body_lines.extend(_render_youtube_info_block(source))
+        body_lines.append("")
+        body_lines.append("---")
+        body_lines.append("")
+        body_lines.extend(_render_transcript_callout(source.content.strip()))
+    else:
+        body_lines.append(source.content.strip())
     body_lines.append("")
 
     post = frontmatter.Post(content="\n".join(body_lines), **fm)
