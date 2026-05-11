@@ -15,6 +15,12 @@ def configure_logging() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         stream=sys.stderr,
     )
+    # Silence noisy third-party INFO/DEBUG chatter that drowns our own logs:
+    # - readability emits "ruthless removal did not work" on every fallback
+    # - httpx / httpcore log each request line
+    # - urllib3 connection pool debug
+    for noisy in ("readability.readability", "httpx", "httpcore", "urllib3"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
 def vault_path() -> Path:

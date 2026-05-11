@@ -150,13 +150,12 @@
             "state": {
               "type": "outline",
               "state": {
-                "file": "Daily/2026-05-10.md",
                 "followCursor": false,
                 "showSearch": false,
                 "searchQuery": ""
               },
               "icon": "lucide-list",
-              "title": "Outline of 2026-05-10"
+              "title": "Outline"
             }
           }
         ]
@@ -177,10 +176,14 @@
       "bases:Create new base": false
     }
   },
-  "active": "5b4c90bf92f12865",
+  "active": "52796df5f9292e50",
   "lastOpenFiles": [
-    "Inbox/articles/SpaceXAI signs agreement with Anthropic for massive AI supercomputer access.md",
+    "Inbox/youtube/2026-05-11_316. Più rendimento con meno rischio? Quando la leva migliora il portafoglio.md",
+    "Notes/youtube/2026-05-10/2026-05-11_316. Più rendimento con meno rischio? Quando la leva migliora il portafoglio.md",
+    "Notes/youtube/2026-05-10",
     "Daily/2026-05-10.md",
+    "Daily",
+    "Inbox/articles/SpaceXAI signs agreement with Anthropic for massive AI supercomputer access.md",
     "Inbox/articles/Untitled.md",
     "Inbox/newsletter/2026-05-11 - Trump to press Xi on Iran war.md",
     "Inbox/newsletter/2026-05-11 - Political pressure cooker week.md",
@@ -200,8 +203,6 @@
     "Inbox/places",
     "Inbox/youtube",
     "Inbox/articles",
-    "Inbox",
-    "Inbox/articles/Life_without_US_tech_2026-05-11.md",
-    "Clippings"
+    "Inbox/articles/Life_without_US_tech_2026-05-11.md"
   ]
 }
