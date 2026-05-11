@@ -18,6 +18,8 @@ from second_brain.archive import EXCLUDED_NOTES_SUBDIRS
 from second_brain.config import async_concurrency, vault_path
 from second_brain.llm import (
     call_llm_async,
+    call_llm_text,
+    embed_text,
     embed_text_safe,
     embed_text_safe_async,
     load_prompt,
@@ -203,6 +205,80 @@ def commit_state(sources: list[Source]) -> None:
             logger.error("mark_processed(%s) failed: %s", key, exc)
 
 
+# ---------- RAG ask ----------
+
+
+def _retrieve_context(query: str, k: int) -> list[dict]:
+    """Embed ``query`` and pull top-K Chroma matches as rich dicts.
+
+    Returns ``[]`` (with a logged warning) when the vector store is
+    unavailable or empty, so callers can degrade gracefully instead of
+    crashing.
+    """
+    collection = vector.open_collection()
+    if collection is None:
+        return []
+    try:
+        embedding = embed_text(query)
+    except Exception as exc:
+        logger.error("query embedding failed: %s", exc)
+        return []
+    try:
+        result = collection.query(
+            query_embeddings=[embedding],
+            n_results=k,
+            include=["metadatas", "documents", "distances"],
+        )
+    except Exception as exc:
+        logger.error("Chroma query failed: %s", exc)
+        return []
+    metadatas = (result.get("metadatas") or [[]])[0]
+    documents = (result.get("documents") or [[]])[0]
+    distances = (result.get("distances") or [[]])[0]
+    out: list[dict] = []
+    for meta, doc, dist in zip(metadatas, documents, distances, strict=False):
+        out.append(
+            {
+                "title": meta.get("title", ""),
+                "path": meta.get("path", ""),
+                "kind": meta.get("kind", "note"),
+                "tags": meta.get("tags", ""),
+                "excerpt": (doc or "")[:1500],
+                "distance": dist,
+            }
+        )
+    return out
+
+
+def _build_ask_message(query: str, hits: list[dict]) -> str:
+    """Format retrieved hits as a numbered context block for the LLM."""
+    if not hits:
+        return f"QUESTION: {query}\n\nCONTEXT ENTRIES:\n(none — vault returned no matches)\n"
+    lines = [f"QUESTION: {query}", "", "CONTEXT ENTRIES:"]
+    for i, h in enumerate(hits, start=1):
+        lines.append(
+            f"\n[{i}] path: {h['path']}\n"
+            f"    title: {h['title']}\n"
+            f"    kind: {h['kind']}\n"
+            f"    tags: {h['tags']}\n"
+            f"    excerpt:\n{h['excerpt']}\n"
+        )
+    return "\n".join(lines)
+
+
+def ask(query: str, k: int = 8) -> tuple[str, list[dict]]:
+    """Answer ``query`` over the vault. Returns ``(answer_md, hits_used)``."""
+    hits = _retrieve_context(query, k)
+    system_prompt = load_prompt("ask.txt")
+    user_msg = _build_ask_message(query, hits)
+    try:
+        answer = call_llm_text(system_prompt, user_msg)
+    except Exception:
+        logger.error("ask LLM call failed:\n%s", traceback.format_exc())
+        return "_[Errore LLM]_", hits
+    return answer.strip(), hits
+
+
 # ---------- vault indexing ----------
 
 
@@ -241,32 +317,57 @@ def _is_excluded(path: Path, notes_dir: Path) -> bool:
     return bool(rel_parts) and rel_parts[0] in EXCLUDED_NOTES_SUBDIRS
 
 
-def _gather_notes(incremental: bool) -> list[Path]:
-    notes_dir = vault_path() / "Notes"
-    if not notes_dir.exists():
-        logger.error("Notes/ directory not found at %s", notes_dir)
-        return []
-    all_md = sorted(p for p in notes_dir.rglob("*.md") if not _is_excluded(p, notes_dir))
-    if not incremental:
-        return all_md
-    cutoff = _read_last_index()
-    return [p for p in all_md if p.stat().st_mtime > cutoff]
+def _gather_notes(incremental: bool, include_daily: bool = True) -> list[tuple[Path, str]]:
+    """Return ``(path, kind)`` for every indexable markdown file.
+
+    ``kind`` is either ``"note"`` (hand-written under ``Notes/``) or
+    ``"daily"`` (generated recaps under ``Daily/``, including archived
+    ``Daily/{YYYY}/{MM}/``). Daily files are valuable in the corpus
+    because they're already LLM-curated summaries of past inputs.
+    """
+    vault = vault_path()
+    cutoff = _read_last_index() if incremental else 0.0
+    out: list[tuple[Path, str]] = []
+
+    notes_dir = vault / "Notes"
+    if notes_dir.exists():
+        for p in sorted(notes_dir.rglob("*.md")):
+            if _is_excluded(p, notes_dir):
+                continue
+            if incremental and p.stat().st_mtime <= cutoff:
+                continue
+            out.append((p, "note"))
+    else:
+        logger.warning("Notes/ directory not found at %s", notes_dir)
+
+    if include_daily:
+        daily_dir = vault / "Daily"
+        if daily_dir.exists():
+            for p in sorted(daily_dir.rglob("*.md")):
+                if incremental and p.stat().st_mtime <= cutoff:
+                    continue
+                out.append((p, "daily"))
+
+    return out
 
 
-def index_notes(incremental: bool) -> int:
-    """Index Notes/ into Chroma. Returns count of indexed notes."""
-    files = _gather_notes(incremental)
+def index_notes(incremental: bool, include_daily: bool = True) -> int:
+    """Index Notes/ (and optionally Daily/) into Chroma. Returns count indexed."""
+    files = _gather_notes(incremental, include_daily=include_daily)
     if not files:
         logger.info("no notes to index")
         return 0
-    logger.info("indexing %d notes (incremental=%s)", len(files), incremental)
+    by_kind: dict[str, int] = {}
+    for _, k in files:
+        by_kind[k] = by_kind.get(k, 0) + 1
+    logger.info("indexing %d files (incremental=%s, %s)", len(files), incremental, by_kind)
     collection = vector.open_collection()
     if collection is None:
         logger.error("ChromaDB not available — aborting index")
         return 0
     vault = vault_path()
     indexed = 0
-    for fpath in tqdm(files, desc="indexing", unit="note", file=sys.stderr):
+    for fpath, kind in tqdm(files, desc="indexing", unit="note", file=sys.stderr):
         try:
             post = frontmatter.load(fpath)
         except Exception as exc:
@@ -283,7 +384,7 @@ def index_notes(incremental: bool) -> int:
         except Exception as exc:
             logger.error("embedding failed for %s: %s", rel, exc)
             continue
-        vector.upsert_note(collection, rel, embedding, title, rel, tags, content)
+        vector.upsert_note(collection, rel, embedding, title, rel, tags, content, kind=kind)
         indexed += 1
     _write_last_index(time.time())
     return indexed

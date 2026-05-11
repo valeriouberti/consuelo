@@ -53,7 +53,14 @@ def upsert_note(
     path: str,
     tags: list[str],
     content: str,
+    kind: str = "note",
 ) -> None:
+    """Insert or replace a vector entry.
+
+    ``kind`` distinguishes hand-written Notes (``"note"``, default) from
+    generated Daily recaps (``"daily"``) so query results can be filtered
+    or weighted differently downstream.
+    """
     collection.upsert(
         ids=[note_id],
         embeddings=[embedding],
@@ -62,6 +69,7 @@ def upsert_note(
                 "title": title,
                 "path": path,
                 "tags": ",".join(tags),
+                "kind": kind,
             }
         ],
         documents=[content[:2000]],

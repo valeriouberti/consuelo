@@ -39,7 +39,7 @@ _PRICING_PER_1M_USD: dict[str, dict[str, float]] = {
     "text-embedding-3-large": {"input": 0.130, "output": 0.0},
 }
 
-_usage: dict[str, int] = {"prompt": 0, "completion": 0, "embed": 0}
+_usage: dict[str, int] = {"prompt": 0, "completion": 0, "embed": 0, "cache_hits": 0}
 
 
 def reset_usage() -> None:
@@ -47,6 +47,7 @@ def reset_usage() -> None:
     _usage["prompt"] = 0
     _usage["completion"] = 0
     _usage["embed"] = 0
+    _usage["cache_hits"] = 0
 
 
 def _record_chat_usage(response) -> None:
@@ -79,10 +80,16 @@ def usage_summary() -> dict:
         "prompt_tokens": _usage["prompt"],
         "completion_tokens": _usage["completion"],
         "embed_tokens": _usage["embed"],
+        "cache_hits": _usage["cache_hits"],
         "chat_model": chat_model,
         "embed_model": embed_model,
         "estimated_usd": round(cost, 4),
     }
+
+
+def _cache_model_key() -> str:
+    """Identifier for the active embedding model — namespace for cache keys."""
+    return f"cloud:{openai_embed_model()}" if llm_mode() == "cloud" else f"local:{ollama_embed_model()}"
 
 
 # ---------- retry ----------
@@ -164,9 +171,16 @@ def _embed_cloud(text: str) -> list[float]:
 
 
 def embed_text(text: str) -> list[float]:
-    if llm_mode() == "cloud":
-        return _embed_cloud(text)
-    return _embed_local(text)
+    from second_brain import embedding_cache  # local import: avoid cycles
+
+    model_key = _cache_model_key()
+    cached = embedding_cache.get(text, model_key)
+    if cached is not None:
+        _usage["cache_hits"] += 1
+        return cached
+    vector = _embed_cloud(text) if llm_mode() == "cloud" else _embed_local(text)
+    embedding_cache.put(text, model_key, vector)
+    return vector
 
 
 def _is_context_overflow(exc: BaseException) -> bool:
@@ -222,9 +236,16 @@ async def _embed_cloud_async(text: str) -> list[float]:
 
 
 async def embed_text_async(text: str) -> list[float]:
-    if llm_mode() == "cloud":
-        return await _embed_cloud_async(text)
-    return await _embed_local_async(text)
+    from second_brain import embedding_cache  # local import: avoid cycles
+
+    model_key = _cache_model_key()
+    cached = await asyncio.to_thread(embedding_cache.get, text, model_key)
+    if cached is not None:
+        _usage["cache_hits"] += 1
+        return cached
+    vector = await (_embed_cloud_async(text) if llm_mode() == "cloud" else _embed_local_async(text))
+    await asyncio.to_thread(embedding_cache.put, text, model_key, vector)
+    return vector
 
 
 async def embed_text_safe_async(text: str, max_chars: int | None = None) -> list[float]:
@@ -285,6 +306,52 @@ def call_llm(system_prompt: str, user_msg: str) -> str:
     if llm_mode() == "cloud":
         return _chat_cloud(system_prompt, user_msg)
     return _chat_local(system_prompt, user_msg)
+
+
+def _chat_local_text(system_prompt: str, user_msg: str) -> str:
+    """Like ``_chat_local`` but without JSON format constraint — for prose output."""
+    import ollama  # type: ignore
+
+    response = ollama.chat(
+        model=ollama_model(),
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_msg},
+        ],
+        options={
+            "num_ctx": ollama_chat_num_ctx(),
+            "num_predict": ollama_chat_num_predict(),
+        },
+    )
+    return response["message"]["content"]
+
+
+def _chat_cloud_text(system_prompt: str, user_msg: str) -> str:
+    """Like ``_chat_cloud`` but without ``response_format=json_object``."""
+    from openai import OpenAI  # type: ignore
+
+    client = OpenAI(api_key=openai_api_key())
+    response = client.chat.completions.create(
+        model=openai_model(),
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_msg},
+        ],
+    )
+    _record_chat_usage(response)
+    return response.choices[0].message.content or ""
+
+
+def call_llm_text(system_prompt: str, user_msg: str) -> str:
+    """Plain-text variant of ``call_llm`` — use for prose answers (RAG, etc).
+
+    The standard ``call_llm`` forces ``response_format=json_object`` because
+    every recap prompt expects strict JSON. RAG-style answers want
+    Markdown prose, so this variant drops the JSON constraint.
+    """
+    if llm_mode() == "cloud":
+        return _chat_cloud_text(system_prompt, user_msg)
+    return _chat_local_text(system_prompt, user_msg)
 
 
 # ---------- async chat completion ----------

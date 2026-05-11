@@ -16,6 +16,9 @@ from second_brain.archive import archive_previous_daily, archive_sources
 from second_brain.config import configure_logging, llm_mode
 from second_brain.llm import reset_usage, usage_summary
 from second_brain.pipeline import (
+    ask as ask_pipeline,
+)
+from second_brain.pipeline import (
     commit_state,
     embed_sources,
     enrich_sources,
@@ -110,8 +113,10 @@ def run(date_str: str | None, dry_run: bool, mode: str | None) -> None:
 
     log_status_report(sources)
 
+    u = usage_summary()
+    if u["cache_hits"]:
+        logger.info("embedding cache: %d hits", u["cache_hits"])
     if llm_mode() == "cloud":
-        u = usage_summary()
         logger.info(
             "cost: $%.4f (chat: %d prompt + %d completion @ %s | embed: %d @ %s)",
             u["estimated_usd"],
@@ -124,11 +129,52 @@ def run(date_str: str | None, dry_run: bool, mode: str | None) -> None:
 
 
 @cli.command()
+@click.argument("query")
+@click.option("-k", "top_k", default=8, show_default=True, help="How many vault entries to retrieve.")
+@click.option(
+    "--mode",
+    type=click.Choice(["local", "cloud"]),
+    default=None,
+    help="Override LLM_MODE for this query.",
+)
+def ask(query: str, top_k: int, mode: str | None) -> None:
+    """Ask a question over the indexed vault (Notes/ + Daily/).
+
+    Example::
+
+        second-brain ask "cosa ho letto sui Kubernetes operators?"
+    """
+    if mode:
+        os.environ["LLM_MODE"] = mode
+    reset_usage()
+    answer, hits = ask_pipeline(query, k=top_k)
+    if not hits:
+        logger.warning("no vault matches — answer based on empty context")
+    sys.stdout.write(answer.rstrip() + "\n")
+    sys.stdout.flush()
+    u = usage_summary()
+    if u["cache_hits"]:
+        logger.info("embedding cache: %d hits", u["cache_hits"])
+    if llm_mode() == "cloud":
+        logger.info(
+            "cost: $%.4f (%d prompt + %d completion tok)",
+            u["estimated_usd"],
+            u["prompt_tokens"],
+            u["completion_tokens"],
+        )
+
+
+@cli.command()
 @click.option("--incremental", is_flag=True, help="Only index notes modified since last index.")
-def index(incremental: bool) -> None:
-    """Index Notes/ into ChromaDB."""
+@click.option(
+    "--no-daily",
+    is_flag=True,
+    help="Skip Daily/ recaps (default: include past Dailies for cross-temporal recall).",
+)
+def index(incremental: bool, no_daily: bool) -> None:
+    """Index Notes/ (and Daily/ by default) into ChromaDB."""
     start = time.time()
-    count = index_notes(incremental)
+    count = index_notes(incremental, include_daily=not no_daily)
     elapsed = time.time() - start
     logger.info("done — %d notes indexed in %.1fs", count, elapsed)
 
