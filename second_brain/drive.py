@@ -40,16 +40,12 @@ def _service():
     """Build a Drive v3 client. Raises if credentials are misconfigured."""
     creds_path = gdrive_credentials_json()
     if not creds_path:
-        raise RuntimeError(
-            "GDRIVE_CREDENTIALS_JSON not set — cannot authenticate to Drive"
-        )
+        raise RuntimeError("GDRIVE_CREDENTIALS_JSON not set — cannot authenticate to Drive")
     try:
         from google.oauth2 import service_account  # type: ignore
         from googleapiclient.discovery import build  # type: ignore
     except ImportError as exc:
-        raise RuntimeError(
-            "google-api-python-client / google-auth not installed"
-        ) from exc
+        raise RuntimeError("google-api-python-client / google-auth not installed") from exc
     creds = service_account.Credentials.from_service_account_file(
         creds_path, scopes=list(DRIVE_SCOPES)
     )
@@ -66,11 +62,7 @@ def list_pdfs(folder_id: str) -> list[DriveFile]:
         svc = _service()
         files: list[DriveFile] = []
         page_token: str | None = None
-        query = (
-            f"'{folder_id}' in parents "
-            f"and mimeType='{PDF_MIME}' "
-            "and trashed=false"
-        )
+        query = f"'{folder_id}' in parents and mimeType='{PDF_MIME}' and trashed=false"
         while True:
             resp = (
                 svc.files()

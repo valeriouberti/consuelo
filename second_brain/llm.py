@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from functools import lru_cache
@@ -24,6 +25,120 @@ from second_brain.config import (
 logger = logging.getLogger(__name__)
 
 
+# ---------- cost tracking (cloud only) ----------
+
+# Per-1M-token USD pricing for the cloud models we support. Updated when
+# OpenAI changes their tariff — keep in sync with
+# https://openai.com/api/pricing/. Source-of-truth for the cost summary
+# printed at the end of each run; off by an order of magnitude only
+# matters until you notice and update the dict.
+_PRICING_PER_1M_USD: dict[str, dict[str, float]] = {
+    "gpt-4o-mini": {"input": 0.150, "output": 0.600},
+    "gpt-4o": {"input": 2.500, "output": 10.000},
+    "text-embedding-3-small": {"input": 0.020, "output": 0.0},
+    "text-embedding-3-large": {"input": 0.130, "output": 0.0},
+}
+
+_usage: dict[str, int] = {"prompt": 0, "completion": 0, "embed": 0}
+
+
+def reset_usage() -> None:
+    """Zero the per-run token counters. Call at the start of a run."""
+    _usage["prompt"] = 0
+    _usage["completion"] = 0
+    _usage["embed"] = 0
+
+
+def _record_chat_usage(response) -> None:
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return
+    _usage["prompt"] += getattr(usage, "prompt_tokens", 0) or 0
+    _usage["completion"] += getattr(usage, "completion_tokens", 0) or 0
+
+
+def _record_embed_usage(response) -> None:
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return
+    _usage["embed"] += getattr(usage, "total_tokens", 0) or 0
+
+
+def usage_summary() -> dict:
+    """Snapshot of token counters + estimated USD cost for the current run."""
+    chat_model = openai_model()
+    embed_model = openai_embed_model()
+    chat_price = _PRICING_PER_1M_USD.get(chat_model, {"input": 0.0, "output": 0.0})
+    embed_price = _PRICING_PER_1M_USD.get(embed_model, {"input": 0.0, "output": 0.0})
+    cost = (
+        _usage["prompt"] / 1_000_000 * chat_price["input"]
+        + _usage["completion"] / 1_000_000 * chat_price["output"]
+        + _usage["embed"] / 1_000_000 * embed_price["input"]
+    )
+    return {
+        "prompt_tokens": _usage["prompt"],
+        "completion_tokens": _usage["completion"],
+        "embed_tokens": _usage["embed"],
+        "chat_model": chat_model,
+        "embed_model": embed_model,
+        "estimated_usd": round(cost, 4),
+    }
+
+
+# ---------- retry ----------
+
+RETRY_ATTEMPTS = 3
+RETRY_BASE_DELAY_S = 1.0
+
+
+def _is_transient(exc: BaseException) -> bool:
+    """True if ``exc`` is worth retrying.
+
+    Covers OpenAI rate limits and transient API errors plus generic
+    network timeouts. Errors that won't fix themselves (auth, bad
+    request, context overflow) are NOT transient — caller should fail
+    fast or handle explicitly.
+    """
+    name = type(exc).__name__
+    # OpenAI SDK exception class names (avoid importing openai at module load):
+    if name in ("RateLimitError", "APIConnectionError", "APITimeoutError", "InternalServerError"):
+        return True
+    if name == "APIStatusError":
+        status = getattr(exc, "status_code", None)
+        return isinstance(status, int) and status >= 500
+    # httpx / std network:
+    if name in ("TimeoutException", "ConnectTimeout", "ReadTimeout", "ConnectError"):
+        return True
+    return False
+
+
+async def _retry_async(coro_factory, *, attempts: int = RETRY_ATTEMPTS):
+    """Run ``coro_factory()`` with exponential backoff on transient errors.
+
+    ``coro_factory`` is a 0-arg callable returning a fresh coroutine — we
+    can't reuse a coroutine across retries, it has to be recreated.
+    """
+    last_exc: BaseException | None = None
+    for i in range(attempts):
+        try:
+            return await coro_factory()
+        except BaseException as exc:  # noqa: BLE001 — we re-raise if non-transient
+            if not _is_transient(exc) or i == attempts - 1:
+                raise
+            last_exc = exc
+            delay = RETRY_BASE_DELAY_S * (2**i)
+            logger.warning(
+                "transient %s, retry %d/%d after %.1fs",
+                type(exc).__name__,
+                i + 1,
+                attempts,
+                delay,
+            )
+            await asyncio.sleep(delay)
+    assert last_exc is not None
+    raise last_exc
+
+
 # ---------- embeddings ----------
 
 
@@ -44,6 +159,7 @@ def _embed_cloud(text: str) -> list[float]:
 
     client = OpenAI(api_key=openai_api_key())
     response = client.embeddings.create(model=openai_embed_model(), input=text)
+    _record_embed_usage(response)
     return list(response.data[0].embedding)
 
 
@@ -96,7 +212,12 @@ async def _embed_cloud_async(text: str) -> list[float]:
     from openai import AsyncOpenAI  # type: ignore
 
     client = AsyncOpenAI(api_key=openai_api_key())
-    response = await client.embeddings.create(model=openai_embed_model(), input=text)
+
+    async def call():
+        return await client.embeddings.create(model=openai_embed_model(), input=text)
+
+    response = await _retry_async(call)
+    _record_embed_usage(response)
     return list(response.data[0].embedding)
 
 
@@ -156,6 +277,7 @@ def _chat_cloud(system_prompt: str, user_msg: str) -> str:
         ],
         response_format={"type": "json_object"},
     )
+    _record_chat_usage(response)
     return response.choices[0].message.content or ""
 
 
@@ -191,14 +313,19 @@ async def _chat_cloud_async(system_prompt: str, user_msg: str) -> str:
     from openai import AsyncOpenAI  # type: ignore
 
     client = AsyncOpenAI(api_key=openai_api_key())
-    response = await client.chat.completions.create(
-        model=openai_model(),
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_msg},
-        ],
-        response_format={"type": "json_object"},
-    )
+
+    async def call():
+        return await client.chat.completions.create(
+            model=openai_model(),
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_msg},
+            ],
+            response_format={"type": "json_object"},
+        )
+
+    response = await _retry_async(call)
+    _record_chat_usage(response)
     return response.choices[0].message.content or ""
 
 

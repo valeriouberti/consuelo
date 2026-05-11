@@ -14,12 +14,14 @@ from dotenv import load_dotenv
 
 from second_brain.archive import archive_previous_daily, archive_sources
 from second_brain.config import configure_logging, llm_mode
+from second_brain.llm import reset_usage, usage_summary
 from second_brain.pipeline import (
     commit_state,
     embed_sources,
     enrich_sources,
     gather_sources,
     index_notes,
+    log_status_report,
 )
 from second_brain.rendering import render_daily, write_daily
 from second_brain.sources import archive_pdf_sources
@@ -59,6 +61,7 @@ def run(date_str: str | None, dry_run: bool, mode: str | None) -> None:
     date_iso = target_date.isoformat()
 
     logger.info("target date: %s (mode=%s, dry_run=%s)", date_iso, llm_mode(), dry_run)
+    reset_usage()
 
     async def _pipeline():
         sources = await gather_sources(target_date=target_date)
@@ -104,6 +107,20 @@ def run(date_str: str | None, dry_run: bool, mode: str | None) -> None:
     moved_pdfs = archive_pdf_sources(sources)
     if moved_pdfs:
         logger.info("archived %d processed PDF(s) on Drive", moved_pdfs)
+
+    log_status_report(sources)
+
+    if llm_mode() == "cloud":
+        u = usage_summary()
+        logger.info(
+            "cost: $%.4f (chat: %d prompt + %d completion @ %s | embed: %d @ %s)",
+            u["estimated_usd"],
+            u["prompt_tokens"],
+            u["completion_tokens"],
+            u["chat_model"],
+            u["embed_tokens"],
+            u["embed_model"],
+        )
 
 
 @cli.command()

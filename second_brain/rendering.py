@@ -96,6 +96,26 @@ def _connections_paragraph(sources: list[Source]) -> str:
     return f"I contenuti di oggi condividono i temi: {tags_str}."
 
 
+def _stats_footer(sources: list[Source]) -> str:
+    """Compact footer line: counts that help spot anomalies at a glance."""
+    n = len(sources)
+    by_type: dict[str, int] = {}
+    for s in sources:
+        by_type[s.type] = by_type.get(s.type, 0) + 1
+    types_str = ", ".join(f"{k}: {v}" for k, v in sorted(by_type.items()))
+    unique_tags = {t for s in sources for t in s.tags}
+    unique_corr = {c for s in sources for c in s.correlations}
+    failed = sum(1 for s in sources if s.status != "ok")
+    parts = [
+        f"**Fonti**: {n} ({types_str})",
+        f"**Tag unici**: {len(unique_tags)}",
+        f"**Correlations**: {len(unique_corr)}",
+    ]
+    if failed:
+        parts.append(f"⚠️ **Failed**: {failed}")
+    return " · ".join(parts)
+
+
 def render_daily(date: str, sources: list[Source]) -> str:
     """Return the full Daily/{date}.md content as a string."""
     meta = _build_frontmatter(date, sources)
@@ -107,6 +127,9 @@ def render_daily(date: str, sources: list[Source]) -> str:
     if conn:
         body_lines.append("## 🔗 Connessioni tra i contenuti")
         body_lines.append(conn)
+        body_lines.append("")
+    if sources:
+        body_lines.append(_stats_footer(sources))
         body_lines.append("")
     post = frontmatter.Post(content="\n".join(body_lines), **meta)
     return frontmatter.dumps(post) + "\n"

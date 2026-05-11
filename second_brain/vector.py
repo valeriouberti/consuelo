@@ -35,11 +35,13 @@ def query_correlations(collection, embedding: list[float] | None, k: int = 5) ->
     metadatas = (result.get("metadatas") or [[]])[0]
     documents = (result.get("documents") or [[]])[0]
     for meta, doc in zip(metadatas, documents):
-        out.append({
-            "title": meta.get("title", ""),
-            "path": meta.get("path", ""),
-            "preview": (doc or "")[:200],
-        })
+        out.append(
+            {
+                "title": meta.get("title", ""),
+                "path": meta.get("path", ""),
+                "preview": (doc or "")[:200],
+            }
+        )
     return out
 
 
@@ -55,10 +57,12 @@ def upsert_note(
     collection.upsert(
         ids=[note_id],
         embeddings=[embedding],
-        metadatas=[{
-            "title": title,
-            "path": path,
-            "tags": ",".join(tags),
-        }],
+        metadatas=[
+            {
+                "title": title,
+                "path": path,
+                "tags": ",".join(tags),
+            }
+        ],
         documents=[content[:2000]],
     )

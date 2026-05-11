@@ -23,6 +23,7 @@ from second_brain.config import (
     gdrive_processed_pdf_folder_id,
     google_maps_api_key,
 )
+from second_brain.llm import _retry_async
 from second_brain.models import Source
 
 logger = logging.getLogger(__name__)
@@ -528,11 +529,18 @@ async def _fetch_url_body_async(client, url: str, sem: asyncio.Semaphore) -> str
     ``client`` is an ``httpx.AsyncClient`` shared across all fetches in
     the same gather call (connection pooling). ``sem`` bounds in-flight
     requests so we don't hammer origins or exhaust local sockets.
+    Transient errors (timeouts, 5xx) are retried with exponential
+    backoff; 4xx and other terminal failures are logged and skipped.
     """
     async with sem:
         try:
-            resp = await client.get(url, follow_redirects=True)
-            resp.raise_for_status()
+
+            async def call():
+                resp = await client.get(url, follow_redirects=True)
+                resp.raise_for_status()
+                return resp
+
+            resp = await _retry_async(call)
         except Exception as exc:
             logger.warning("feed entry fetch failed for %s: %s", url, exc)
             return ""

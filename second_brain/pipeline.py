@@ -114,6 +114,7 @@ async def embed_sources(sources: list[Source]) -> None:
             except Exception as exc:
                 logger.warning("embedding failed for %s: %s", s.title, exc)
                 s.embedding = None
+                s.status = "embed_fail"
 
     await asyncio.gather(*(one(s) for s in sources))
 
@@ -139,6 +140,7 @@ async def _enrich_async(source: Source, related: list[dict]) -> None:
     except Exception:
         logger.error("LLM call failed:\n%s", traceback.format_exc())
         source.recap = "_[Recap non disponibile — errore LLM]_"
+        source.status = "llm_fail"
         return
     source.recap = (payload.get("recap") or "").strip() or "_[Recap vuoto]_"
     tags = [kebab(t) for t in (payload.get("tags") or []) if t]
@@ -168,6 +170,26 @@ async def enrich_sources(sources: list[Source]) -> None:
             await _enrich_async(s, related)
 
     await asyncio.gather(*(one(s) for s in sources))
+
+
+def log_status_report(sources: list[Source]) -> None:
+    """Emit a one-line summary plus per-failure detail at the end of a run.
+
+    Status is set elsewhere: ``embed_sources`` flags ``embed_fail`` when
+    the vector call raises; ``_enrich_async`` flags ``llm_fail`` when
+    the recap can't be generated. Anything that reached the end without
+    being flagged is ``ok``.
+    """
+    if not sources:
+        return
+    counts: dict[str, int] = {}
+    for s in sources:
+        counts[s.status] = counts.get(s.status, 0) + 1
+    summary = ", ".join(f"{k}={v}" for k, v in sorted(counts.items()))
+    logger.info("run summary: %d source(s) — %s", len(sources), summary)
+    for s in sources:
+        if s.status != "ok":
+            logger.warning("  %s: %s [%s]", s.status, s.title, s.type)
 
 
 def commit_state(sources: list[Source]) -> None:

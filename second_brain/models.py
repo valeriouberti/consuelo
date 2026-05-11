@@ -8,6 +8,7 @@ from typing import Literal
 
 SourceType = Literal["article", "youtube", "place", "pdf", "feed"]
 StateSource = Literal["articles", "youtube", "places", "pdfs", "feeds"]
+SourceStatus = Literal["ok", "embed_fail", "llm_fail"]
 
 
 @dataclass
@@ -24,3 +25,4 @@ class Source:
     tags: list[str] = field(default_factory=list)
     correlations: list[str] = field(default_factory=list)
     extra: dict = field(default_factory=dict)
+    status: SourceStatus = "ok"
