@@ -1,0 +1,5 @@
+FROM nomic-embed-text
+
+# Sblocca il context window nativo (8192) del modello base.
+# Default Ollama lo limita a 2048 → overflow su articoli lunghi.
+PARAMETER num_ctx 8192

@@ -1,0 +1,21 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+build/
+dist/
+
+# Vault internals — never sync
+vault/.state/
+vault/.chroma/
+
+# IDE
+.vscode/
+.idea/
+.DS_Store

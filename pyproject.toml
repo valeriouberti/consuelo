@@ -1,0 +1,62 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "second-brain"
+version = "0.1.0"
+description = "Daily Obsidian recap workflow with embeddings + LLM correlations"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "Valerio Uberti", email = "valerio.uberti23@gmail.com" }]
+
+dependencies = [
+    "ollama>=0.3.0",
+    "chromadb>=0.5.0",
+    "pinecone-client>=4.0.0",
+    "openai>=1.40.0",
+    "youtube-transcript-api>=0.6.2",
+    "readability-lxml>=0.8.1",
+    "lxml>=5.0.0",
+    "requests>=2.31.0",
+    "python-frontmatter>=1.1.0",
+    "python-dotenv>=1.0.1",
+    "tqdm>=4.66.0",
+    "click>=8.1.7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.6",
+    "mypy>=1.10",
+]
+
+[project.scripts]
+second-brain = "second_brain.cli:cli"
+
+[tool.hatch.build.targets.wheel]
+packages = ["second_brain"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"prompts" = "prompts"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+
+[tool.mypy]
+python_version = "3.12"
+warn_unused_ignores = true
+warn_redundant_casts = true
+ignore_missing_imports = true

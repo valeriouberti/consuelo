@@ -1,0 +1,107 @@
+"""Click CLI: ``second-brain run`` and ``second-brain index``."""
+
+from __future__ import annotations
+
+import logging
+import os
+import sys
+import time
+from datetime import datetime, timedelta
+
+import click
+from dotenv import load_dotenv
+
+from second_brain.archive import archive_previous_daily, archive_sources
+from second_brain.config import configure_logging, llm_mode
+from second_brain.pipeline import (
+    commit_state,
+    embed_sources,
+    enrich_sources,
+    gather_sources,
+    index_notes,
+)
+from second_brain.rendering import render_daily, write_daily
+
+logger = logging.getLogger(__name__)
+
+
+@click.group()
+def cli() -> None:
+    """Second Brain — daily Obsidian recap workflow."""
+    load_dotenv()
+    configure_logging()
+
+
+@cli.command()
+@click.option("--date", "date_str", help="Target date YYYY-MM-DD (default: yesterday).")
+@click.option("--dry-run", is_flag=True, help="Print to stdout; do not write file or update state.")
+@click.option(
+    "--mode",
+    type=click.Choice(["local", "cloud"]),
+    default=None,
+    help="Override LLM_MODE for this run.",
+)
+def run(date_str: str | None, dry_run: bool, mode: str | None) -> None:
+    """Process new inbox items and write the daily recap."""
+    if mode:
+        os.environ["LLM_MODE"] = mode
+
+    if date_str:
+        try:
+            date_iso = datetime.strptime(date_str, "%Y-%m-%d").date().isoformat()
+        except ValueError:
+            logger.error("invalid --date format, expected YYYY-MM-DD")
+            sys.exit(2)
+    else:
+        date_iso = (datetime.now() - timedelta(days=1)).date().isoformat()
+
+    logger.info("target date: %s (mode=%s, dry_run=%s)", date_iso, llm_mode(), dry_run)
+
+    sources = []
+    try:
+        sources = gather_sources()
+        if not sources:
+            logger.info("no new sources to process — nothing to do")
+            return
+        embed_sources(sources)
+        enrich_sources(sources)
+    except KeyboardInterrupt:
+        logger.warning("interrupted — writing partial output")
+
+    rendered = render_daily(date_iso, sources)
+
+    if dry_run:
+        sys.stdout.write(rendered)
+        sys.stdout.flush()
+        return
+
+    archived_daily = archive_previous_daily(date_iso)
+    if archived_daily:
+        logger.info("archived %d previous daily note(s)", archived_daily)
+
+    try:
+        out_path = write_daily(date_iso, rendered)
+        logger.info("wrote %s", out_path)
+    except OSError as exc:
+        logger.error("write failed — state NOT updated: %s", exc)
+        sys.exit(1)
+
+    commit_state(sources)
+
+    moved = archive_sources(sources, date_iso)
+    if moved:
+        logger.info("archived %d processed source file(s)", moved)
+
+
+@cli.command()
+@click.option("--incremental", is_flag=True, help="Only index notes modified since last index.")
+def index(incremental: bool) -> None:
+    """Index Notes/ into ChromaDB."""
+    start = time.time()
+    count = index_notes(incremental)
+    elapsed = time.time() - start
+    logger.info("done — %d notes indexed in %.1fs", count, elapsed)
+
+
+if __name__ == "__main__":
+    cli()
