@@ -54,6 +54,24 @@ def google_maps_api_key() -> str | None:
     return os.environ.get("GOOGLE_MAPS_API_KEY") or None
 
 
+def gdrive_credentials_json() -> str | None:
+    """Path to a Google service account JSON key file.
+
+    Used by ``second_brain.drive`` to authenticate against Drive v3.
+    """
+    return os.environ.get("GDRIVE_CREDENTIALS_JSON") or None
+
+
+def gdrive_inbox_pdf_folder_id() -> str | None:
+    """Drive folder ID where new PDFs are dropped by the user."""
+    return os.environ.get("GDRIVE_INBOX_PDF_FOLDER_ID") or None
+
+
+def gdrive_processed_pdf_folder_id() -> str | None:
+    """Drive folder ID where processed PDFs are moved post-commit."""
+    return os.environ.get("GDRIVE_PROCESSED_PDF_FOLDER_ID") or None
+
+
 def embed_char_limit() -> int:
     """Max chars sent to embedding model per call.
 

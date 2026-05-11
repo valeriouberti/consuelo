@@ -17,7 +17,7 @@ from second_brain.config import vault_path
 from second_brain.llm import call_llm, embed_text_safe, load_prompt, parse_llm_json
 from second_brain.models import Source
 from second_brain.rendering import kebab
-from second_brain.sources import EXTRACTORS
+from second_brain.sources import EXTRACTORS, gather_pdf_sources
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +45,15 @@ def gather_sources() -> list[Source]:
                 continue
             if src is not None:
                 sources.append(src)
+
+    try:
+        pdf_sources = gather_pdf_sources()
+    except Exception:
+        logger.error("gather_pdf_sources failed:\n%s", traceback.format_exc())
+        pdf_sources = []
+    logger.info("pdfs: %d source(s) from Drive", len(pdf_sources))
+    sources.extend(pdf_sources)
+
     return sources
 
 

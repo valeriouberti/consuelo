@@ -19,3 +19,4 @@ vault/.chroma/
 .vscode/
 .idea/
 .DS_Store
+credentials/

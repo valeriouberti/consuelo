@@ -21,6 +21,7 @@ from second_brain.pipeline import (
     index_notes,
 )
 from second_brain.rendering import render_daily, write_daily
+from second_brain.sources import archive_pdf_sources
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +92,10 @@ def run(date_str: str | None, dry_run: bool, mode: str | None) -> None:
     moved = archive_sources(sources, date_iso)
     if moved:
         logger.info("archived %d processed source file(s)", moved)
+
+    moved_pdfs = archive_pdf_sources(sources)
+    if moved_pdfs:
+        logger.info("archived %d processed PDF(s) on Drive", moved_pdfs)
 
 
 @cli.command()

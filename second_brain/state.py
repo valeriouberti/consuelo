@@ -15,15 +15,15 @@ import logging
 import os
 import re
 import tempfile
+from collections.abc import Iterable
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Iterable
 
 from second_brain.config import vault_path
 
 logger = logging.getLogger(__name__)
 
-SOURCE_TYPES = ("articles", "youtube", "places")
+SOURCE_TYPES = ("articles", "youtube", "places", "pdfs")
 SOURCE_EXTENSIONS = {
     "articles": (".html", ".htm", ".md"),
     "youtube": (".txt", ".md"),
@@ -114,7 +114,10 @@ def get_item_id(source_type: str, file_path: Path) -> str:
     """Canonical ID used to dedupe a source item.
 
     Articles → vault-relative path. YouTube → URL inside the ``.txt``
-    (path fallback). Places → ``place_id`` (path fallback).
+    (path fallback). Places → ``place_id`` (path fallback). PDFs live on
+    Google Drive and do not have a local file — the ID is the Drive
+    ``fileId``, set externally by ``gather_pdf_sources``; this branch
+    therefore raises if reached.
     """
     if source_type == "articles":
         return _relative_id(file_path)
@@ -122,6 +125,8 @@ def get_item_id(source_type: str, file_path: Path) -> str:
         return _extract_youtube_url(file_path) or _relative_id(file_path)
     if source_type == "places":
         return _extract_place_id(file_path) or _relative_id(file_path)
+    if source_type == "pdfs":
+        raise ValueError("PDF state IDs are Drive fileIds — set them in gather_pdf_sources")
     raise ValueError(f"unknown source_type: {source_type}")
 
 
@@ -152,6 +157,25 @@ def get_new_items(source_type: str, inbox_path: Path) -> list[Path]:
     state = _load_state(state_path)
     seen = set(state["processed"])
     return [p for p in all_files if get_item_id(source_type, p) not in seen]
+
+
+def filter_unseen(source_type: str, ids: Iterable[str]) -> list[str]:
+    """Return only IDs not yet recorded in the state file.
+
+    Useful for sources whose items don't live on the local filesystem
+    (e.g. PDFs on Google Drive) — for those, ``get_new_items`` cannot
+    scan an inbox folder, so the caller fetches IDs externally and
+    delegates dedup here.
+
+    No bootstrap-by-mtime: if the state file is missing, every ID is
+    new and gets returned (and will be persisted on first
+    ``mark_processed``).
+    """
+    state_path = _state_file(source_type)
+    if not state_path.exists():
+        return [i for i in ids if i]
+    seen = set(_load_state(state_path)["processed"])
+    return [i for i in ids if i and i not in seen]
 
 
 def mark_processed(source_type: str, ids: Iterable[str]) -> None:

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from second_brain.config import chroma_path
 
@@ -12,7 +11,7 @@ logger = logging.getLogger(__name__)
 COLLECTION_NAME = "notes"
 
 
-def open_collection() -> Optional[object]:
+def open_collection() -> object | None:
     """Return the ``notes`` collection or ``None`` if Chroma is unavailable."""
     try:
         import chromadb  # type: ignore

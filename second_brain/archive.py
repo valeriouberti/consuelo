@@ -45,6 +45,9 @@ def archive_sources(sources: list[Source], run_date_iso: str) -> int:
     vault = vault_path()
     moved = 0
     for s in sources:
+        if s.type == "pdf":
+            # PDFs are archived on Google Drive — see sources.archive_pdf_sources.
+            continue
         if s.source_path is None:
             continue
         src = Path(s.source_path)

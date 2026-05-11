@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal
 
-SourceType = Literal["article", "youtube", "place"]
-StateSource = Literal["articles", "youtube", "places"]
+SourceType = Literal["article", "youtube", "place", "pdf"]
+StateSource = Literal["articles", "youtube", "places", "pdfs"]
 
 
 @dataclass
@@ -18,8 +18,8 @@ class Source:
     content: str
     state_id: str
     state_source: StateSource
-    source_path: Optional[Path] = None  # original inbox file, used for archiving
-    embedding: Optional[list[float]] = None
+    source_path: Path | None = None  # original inbox file, used for archiving
+    embedding: list[float] | None = None
     recap: str = ""
     tags: list[str] = field(default_factory=list)
     correlations: list[str] = field(default_factory=list)

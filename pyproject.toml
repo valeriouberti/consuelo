@@ -24,6 +24,9 @@ dependencies = [
     "python-dotenv>=1.0.1",
     "tqdm>=4.66.0",
     "click>=8.1.7",
+    "google-api-python-client>=2.140.0",
+    "google-auth>=2.34.0",
+    "pdfplumber>=0.11.0",
 ]
 
 [project.optional-dependencies]
