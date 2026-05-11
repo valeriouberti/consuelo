@@ -498,10 +498,17 @@ def _load_feeds_config() -> list[dict]:
         logger.debug("feeds config not found at %s — skipping feed source", path)
         return []
     try:
-        with path.open("r", encoding="utf-8") as fh:
-            data = json.load(fh)
-    except (OSError, json.JSONDecodeError) as exc:
-        logger.error("feeds config %s unreadable: %s", path, exc)
+        raw = path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        logger.warning("feeds config %s unreadable: %s", path, exc)
+        return []
+    if not raw:
+        logger.debug("feeds config %s is empty — skipping feed source", path)
+        return []
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        logger.warning("feeds config %s is malformed JSON: %s", path, exc)
         return []
     if not isinstance(data, list):
         logger.error("feeds config %s must be a JSON array", path)
