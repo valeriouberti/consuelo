@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import sys
 import time
 import traceback
+from datetime import date
 from pathlib import Path
 
 import frontmatter
@@ -13,11 +15,17 @@ from tqdm import tqdm
 
 from second_brain import state, vector
 from second_brain.archive import EXCLUDED_NOTES_SUBDIRS
-from second_brain.config import vault_path
-from second_brain.llm import call_llm, embed_text_safe, load_prompt, parse_llm_json
+from second_brain.config import async_concurrency, vault_path
+from second_brain.llm import (
+    call_llm_async,
+    embed_text_safe,
+    embed_text_safe_async,
+    load_prompt,
+    parse_llm_json,
+)
 from second_brain.models import Source
 from second_brain.rendering import kebab
-from second_brain.sources import EXTRACTORS, gather_pdf_sources
+from second_brain.sources import EXTRACTORS, gather_feed_sources, gather_pdf_sources
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +34,9 @@ LAST_INDEX_FILE = ".state/last_index.txt"
 
 # ---------- daily recap ----------
 
-def gather_sources() -> list[Source]:
+
+def _gather_file_sources() -> list[Source]:
+    """Sync extractors (filesystem-based): articles/youtube/places."""
     inbox = vault_path() / "Inbox"
     sources: list[Source] = []
     for key, extractor in EXTRACTORS.items():
@@ -45,46 +55,86 @@ def gather_sources() -> list[Source]:
                 continue
             if src is not None:
                 sources.append(src)
+    return sources
 
-    try:
-        pdf_sources = gather_pdf_sources()
-    except Exception:
-        logger.error("gather_pdf_sources failed:\n%s", traceback.format_exc())
-        pdf_sources = []
-    logger.info("pdfs: %d source(s) from Drive", len(pdf_sources))
-    sources.extend(pdf_sources)
+
+async def gather_sources(target_date: date | None = None) -> list[Source]:
+    """Gather sources from all configured input channels concurrently.
+
+    File-based extractors + Drive PDF download run in threads (sync libs);
+    feed gathering is natively async. All three run in parallel.
+
+    ``target_date`` is forwarded to ``gather_feed_sources`` so that the
+    feed date filter can drop entries published outside the run's window
+    (see ``FEED_DAYS_BACK`` env). File/PDF sources are not date-filtered
+    here — they live in the Inbox and state already gates them.
+    """
+    file_task = asyncio.to_thread(_gather_file_sources)
+    pdf_task = asyncio.to_thread(gather_pdf_sources)
+    feed_task = gather_feed_sources(target_date=target_date)
+
+    file_res, pdf_res, feed_res = await asyncio.gather(
+        file_task, pdf_task, feed_task, return_exceptions=True
+    )
+
+    sources: list[Source] = []
+    if isinstance(file_res, BaseException):
+        logger.error("file-based gather failed: %s", file_res)
+    else:
+        sources.extend(file_res)
+
+    if isinstance(pdf_res, BaseException):
+        logger.error("gather_pdf_sources failed: %s", pdf_res)
+    else:
+        logger.info("pdfs: %d source(s) from Drive", len(pdf_res))
+        sources.extend(pdf_res)
+
+    if isinstance(feed_res, BaseException):
+        logger.error("gather_feed_sources failed: %s", feed_res)
+    else:
+        logger.info("feeds: %d source(s) from RSS", len(feed_res))
+        sources.extend(feed_res)
 
     return sources
 
 
-def embed_sources(sources: list[Source]) -> None:
-    for s in sources:
-        try:
-            s.embedding = embed_text_safe(s.content)
-        except Exception as exc:
-            logger.warning("embedding failed for %s: %s", s.title, exc)
-            s.embedding = None
+async def embed_sources(sources: list[Source]) -> None:
+    """Embed every source concurrently, bounded by ``async_concurrency()``.
+
+    A failed embedding leaves ``s.embedding = None`` so downstream code
+    can skip vector correlation for that source without aborting the
+    whole run.
+    """
+    sem = asyncio.Semaphore(async_concurrency())
+
+    async def one(s: Source) -> None:
+        async with sem:
+            try:
+                s.embedding = await embed_text_safe_async(s.content)
+            except Exception as exc:
+                logger.warning("embedding failed for %s: %s", s.title, exc)
+                s.embedding = None
+
+    await asyncio.gather(*(one(s) for s in sources))
 
 
 def _build_user_message(source: Source, related: list[dict]) -> str:
     """English framing — matches the system prompt language and avoids
     biasing the model toward Italian. The output language is controlled by
     the prompt's LANGUAGE RULE based on `source.content` only."""
-    related_block = "\n".join(
-        f"- [[{r['path']}]] ({r['title']}): {r['preview']}" for r in related
-    ) or "(no related notes)"
-    return (
-        f"Content to analyze:\n{source.content}\n\n"
-        f"Related Obsidian notes:\n{related_block}\n"
+    related_block = (
+        "\n".join(f"- [[{r['path']}]] ({r['title']}): {r['preview']}" for r in related)
+        or "(no related notes)"
     )
+    return f"Content to analyze:\n{source.content}\n\nRelated Obsidian notes:\n{related_block}\n"
 
 
-def _enrich(source: Source, related: list[dict]) -> None:
+async def _enrich_async(source: Source, related: list[dict]) -> None:
     prompt_name = "place.txt" if source.type == "place" else "recap.txt"
     system_prompt = load_prompt(prompt_name)
     user_msg = _build_user_message(source, related)
     try:
-        raw = call_llm(system_prompt, user_msg)
+        raw = await call_llm_async(system_prompt, user_msg)
         payload = parse_llm_json(raw)
     except Exception:
         logger.error("LLM call failed:\n%s", traceback.format_exc())
@@ -97,11 +147,27 @@ def _enrich(source: Source, related: list[dict]) -> None:
     source.correlations = [str(c).strip() for c in correlations if c][:5]
 
 
-def enrich_sources(sources: list[Source]) -> None:
+async def enrich_sources(sources: list[Source]) -> None:
+    """Vector-correlate + LLM-enrich every source concurrently.
+
+    ``vector.query_correlations`` is sync (chromadb), so it runs in a
+    thread before each LLM call. The shared ``Semaphore`` bounds both
+    the vector queries and the LLM calls together — they cooperate
+    naturally because each source's chain is fully sequential.
+    """
     collection = vector.open_collection()
-    for s in sources:
-        related = vector.query_correlations(collection, s.embedding) if s.embedding else []
-        _enrich(s, related)
+    sem = asyncio.Semaphore(async_concurrency())
+
+    async def one(s: Source) -> None:
+        async with sem:
+            related = (
+                await asyncio.to_thread(vector.query_correlations, collection, s.embedding)
+                if s.embedding
+                else []
+            )
+            await _enrich_async(s, related)
+
+    await asyncio.gather(*(one(s) for s in sources))
 
 
 def commit_state(sources: list[Source]) -> None:
@@ -116,6 +182,7 @@ def commit_state(sources: list[Source]) -> None:
 
 
 # ---------- vault indexing ----------
+
 
 def _normalize_tags(raw) -> list[str]:
     if raw is None:

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import statistics
 import tempfile
+from datetime import date, timedelta
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -13,6 +15,10 @@ import frontmatter
 
 from second_brain import drive, state
 from second_brain.config import (
+    async_concurrency,
+    feed_days_back,
+    feed_max_entries_per_feed,
+    feeds_config_path,
     gdrive_inbox_pdf_folder_id,
     gdrive_processed_pdf_folder_id,
     google_maps_api_key,
@@ -231,8 +237,8 @@ EXTRACTORS = {
 
 # ---------- PDF (Google Drive) ----------
 
-PDF_HEADING_SIZE_RATIO = 1.30   # word > median * ratio counts as heading
-PDF_MIN_ARTICLE_CHARS = 200     # discard tiny fragments (captions, ads, ToCs)
+PDF_HEADING_SIZE_RATIO = 1.30  # word > median * ratio counts as heading
+PDF_MIN_ARTICLE_CHARS = 200  # discard tiny fragments (captions, ads, ToCs)
 PDF_TITLE_MAX_LEN = 120
 
 
@@ -253,9 +259,7 @@ def _pdf_words(pdf_path: Path) -> list[dict]:
     try:
         with pdfplumber.open(pdf_path) as pdf:
             for page_idx, page in enumerate(pdf.pages):
-                page_words = page.extract_words(
-                    extra_attrs=["size"], use_text_flow=True
-                )
+                page_words = page.extract_words(extra_attrs=["size"], use_text_flow=True)
                 for w in page_words:
                     words.append(
                         {
@@ -457,3 +461,294 @@ def archive_pdf_sources(sources: list[Source]) -> int:
         if drive.move_to_processed(fid, inbox_folder, processed_folder):
             moved += 1
     return moved
+
+
+# ---------- RSS / Atom feeds ----------
+
+FEED_MIN_BODY_CHARS = 400  # below → assume headlines-only, fetch link
+FEED_FETCH_TIMEOUT_S = 15
+FEED_USER_AGENT = "second-brain/0.1 (+https://github.com/) feedparser"
+
+
+def _load_feeds_config() -> list[dict]:
+    """Return ``[{name, url}, ...]`` from the JSON config file."""
+    path = feeds_config_path()
+    if not path.exists():
+        logger.debug("feeds config not found at %s — skipping feed source", path)
+        return []
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.error("feeds config %s unreadable: %s", path, exc)
+        return []
+    if not isinstance(data, list):
+        logger.error("feeds config %s must be a JSON array", path)
+        return []
+    valid = [
+        d
+        for d in data
+        if isinstance(d, dict) and isinstance(d.get("url"), str) and d["url"].strip()
+    ]
+    if len(valid) != len(data):
+        logger.warning("feeds config: %d invalid entries skipped", len(data) - len(valid))
+    return valid
+
+
+def _strip_html(html: str) -> str:
+    """Best-effort HTML → plain text for feed bodies.
+
+    Tries readability first (great for full-article HTML); falls back to
+    lxml ``text_content()`` for short summaries where readability tends
+    to return nothing.
+    """
+    try:
+        from lxml import html as lxml_html  # type: ignore
+        from readability import Document  # type: ignore
+    except ImportError:
+        return html
+    try:
+        doc = Document(html)
+        text = lxml_html.fromstring(doc.summary()).text_content().strip()
+        if text:
+            return text
+    except Exception:
+        pass
+    try:
+        from lxml import html as lxml_html2  # type: ignore
+
+        return lxml_html2.fromstring(html).text_content().strip()
+    except Exception:
+        return html
+
+
+async def _fetch_url_body_async(client, url: str, sem: asyncio.Semaphore) -> str:
+    """Async-fetch ``url`` and return readability-stripped plain text.
+
+    ``client`` is an ``httpx.AsyncClient`` shared across all fetches in
+    the same gather call (connection pooling). ``sem`` bounds in-flight
+    requests so we don't hammer origins or exhaust local sockets.
+    """
+    async with sem:
+        try:
+            resp = await client.get(url, follow_redirects=True)
+            resp.raise_for_status()
+        except Exception as exc:
+            logger.warning("feed entry fetch failed for %s: %s", url, exc)
+            return ""
+        text = resp.text
+    return await asyncio.to_thread(_strip_html, text)
+
+
+def _entry_inline_body(entry: dict) -> str:
+    """Return the best inline body for a feedparser entry, or ``""``.
+
+    Atom ``content`` wins over RSS ``summary`` when both are present and
+    populated, since ``content`` is the standard place for full text.
+    """
+    content_list = entry.get("content") or []
+    for c in content_list:
+        value = (c.get("value") or "").strip()
+        if value:
+            return _strip_html(value)
+    summary = (entry.get("summary") or "").strip()
+    if summary:
+        return _strip_html(summary)
+    return ""
+
+
+def _entry_state_id(entry: dict) -> str:
+    """Stable, immutable ID for a feed entry."""
+    return (
+        entry.get("id") or entry.get("guid") or entry.get("link") or entry.get("title", "")
+    ).strip()
+
+
+def _entry_date(entry: dict) -> date | None:
+    """Best-effort publication date from a feedparser entry.
+
+    feedparser exposes parsed timestamps as ``time.struct_time`` under
+    ``published_parsed`` (RSS) or ``updated_parsed`` (Atom). Either is
+    acceptable as the entry's "when". Returns None when neither is
+    present or parseable.
+    """
+    for key in ("published_parsed", "updated_parsed"):
+        tp = entry.get(key)
+        if not tp:
+            continue
+        try:
+            return date(tp.tm_year, tp.tm_mon, tp.tm_mday)
+        except (AttributeError, ValueError):
+            continue
+    return None
+
+
+def _entry_in_window(entry: dict, target: date | None, days_back: int) -> bool:
+    """True if the entry's pub date is within the allowed window.
+
+    - ``target=None`` or ``days_back<0``: filter disabled, keep everything.
+    - Otherwise: keep iff ``target - days_back <= entry_date <= target``.
+    - Entries with no parseable date are always kept (don't drop content
+      because of upstream metadata gaps).
+    """
+    if target is None or days_back < 0:
+        return True
+    d = _entry_date(entry)
+    if d is None:
+        return True
+    earliest = target - timedelta(days=days_back)
+    return earliest <= d <= target
+
+
+def _parse_feed(url: str) -> tuple[list[dict], object]:
+    """Sync wrapper around feedparser.parse — offloaded via ``to_thread``."""
+    import feedparser  # type: ignore
+
+    parsed = feedparser.parse(url, agent=FEED_USER_AGENT)
+    return list(parsed.entries), parsed.bozo_exception if parsed.bozo else None
+
+
+async def gather_feed_sources(target_date: date | None = None) -> list[Source]:
+    """Poll every configured feed concurrently, return one Source per unseen entry.
+
+    Freshness strategy (two complementary knobs):
+
+    - **Per-feed recency cap** (``feed_max_entries_per_feed``, default 3):
+      after parsing, each feed is sorted by publication date descending and
+      only the top N entries are kept. State dedup still applies, so a feed
+      that posts daily will normally yield 1 new Source/run; after a
+      weekend, up to N entries can backfill. Set 0/negative to disable.
+    - **Optional date window** (``feed_days_back``, default disabled): when
+      enabled, also requires the entry's date to fall in
+      ``[target_date - days_back, target_date]``. Used for explicit
+      backfill runs against ``--date``.
+
+    Parallelism:
+
+    - Feed parsing (``feedparser.parse``) runs in a thread pool — sync
+      library, but each call is independent so they overlap freely.
+    - Per-entry URL fetches (used when the feed only has headlines) use
+      a shared ``httpx.AsyncClient`` with a ``Semaphore`` cap from
+      ``async_concurrency()``.
+
+    Body resolution: inline ``content``/``summary`` if substantive, else
+    fetch ``entry.link`` and strip via readability — required for
+    headline-only feeds like TLDR.
+    """
+    feeds = _load_feeds_config()
+    if not feeds:
+        return []
+    try:
+        import feedparser  # type: ignore  # noqa: F401  — fail fast if missing
+    except ImportError:
+        logger.error("feedparser not installed — cannot gather feeds")
+        return []
+    try:
+        import httpx  # type: ignore
+    except ImportError:
+        logger.error("httpx not installed — cannot fetch feed entry URLs")
+        return []
+
+    parse_tasks = [asyncio.to_thread(_parse_feed, fc["url"]) for fc in feeds]
+    parsed_results = await asyncio.gather(*parse_tasks, return_exceptions=True)
+
+    max_per_feed = feed_max_entries_per_feed()
+    all_entries: list[tuple[dict, str]] = []
+    for fc, result in zip(feeds, parsed_results, strict=True):
+        url = fc["url"]
+        name = fc.get("name") or url
+        if isinstance(result, BaseException):
+            logger.warning("feedparser failed for %s: %s", url, result)
+            continue
+        entries, bozo = result
+        if bozo and not entries:
+            logger.warning("feed %s returned no entries (bozo=%s)", url, bozo)
+            continue
+        # Sort by date desc so the top-N cap keeps the freshest. Entries
+        # without a parsable date sink to the bottom but stay eligible
+        # if room remains under the cap.
+        sorted_entries = sorted(
+            entries,
+            key=lambda e: _entry_date(e) or date.min,
+            reverse=True,
+        )
+        if max_per_feed > 0:
+            sorted_entries = sorted_entries[:max_per_feed]
+        for entry in sorted_entries:
+            all_entries.append((entry, name))
+    if not all_entries:
+        return []
+
+    days_back = feed_days_back()
+    if target_date is not None and days_back >= 0:
+        before_date_filter = len(all_entries)
+        all_entries = [
+            (e, n) for e, n in all_entries if _entry_in_window(e, target_date, days_back)
+        ]
+        logger.info(
+            "feeds: date filter kept %d/%d entries (target=%s, days_back=%d)",
+            len(all_entries),
+            before_date_filter,
+            target_date.isoformat(),
+            days_back,
+        )
+        if not all_entries:
+            return []
+
+    all_ids = [_entry_state_id(e) for e, _ in all_entries]
+    unseen = set(state.filter_unseen("feeds", all_ids))
+    logger.info("feeds: %d new entries across %d feed(s)", len(unseen), len(feeds))
+
+    new_entries: list[tuple[dict, str, str, str, str]] = []  # (entry, feed_name, sid, title, link)
+    for entry, feed_name in all_entries:
+        sid = _entry_state_id(entry)
+        if not sid or sid not in unseen:
+            continue
+        unseen.discard(sid)
+        title = (entry.get("title") or "(untitled)").strip()
+        link = (entry.get("link") or "").strip()
+        new_entries.append((entry, feed_name, sid, title, link))
+
+    if not new_entries:
+        return []
+
+    sem = asyncio.Semaphore(async_concurrency())
+    timeout = httpx.Timeout(FEED_FETCH_TIMEOUT_S)
+    headers = {"User-Agent": FEED_USER_AGENT}
+
+    async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
+
+        async def resolve_body(entry: dict, link: str) -> str:
+            inline = await asyncio.to_thread(_entry_inline_body, entry)
+            if len(inline) >= FEED_MIN_BODY_CHARS or not link:
+                return inline
+            fetched = await _fetch_url_body_async(client, link, sem)
+            return fetched if len(fetched) > len(inline) else inline
+
+        body_tasks = [resolve_body(entry, link) for entry, _, _, _, link in new_entries]
+        bodies = await asyncio.gather(*body_tasks, return_exceptions=True)
+
+    sources: list[Source] = []
+    for (entry, feed_name, sid, title, link), body in zip(new_entries, bodies, strict=True):
+        if isinstance(body, BaseException):
+            logger.warning("body resolution failed for %r: %s", title, body)
+            continue
+        if not body:
+            logger.warning("feed entry %r has no body, skipping", title)
+            continue
+        sources.append(
+            Source(
+                type="feed",
+                title=title,
+                url=link or sid,
+                content=body,
+                state_id=sid,
+                state_source="feeds",
+                source_path=None,
+                extra={
+                    "feed_name": feed_name,
+                    "published": entry.get("published") or entry.get("updated") or "",
+                },
+            )
+        )
+    return sources

@@ -6,8 +6,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-SourceType = Literal["article", "youtube", "place", "pdf"]
-StateSource = Literal["articles", "youtube", "places", "pdfs"]
+SourceType = Literal["article", "youtube", "place", "pdf", "feed"]
+StateSource = Literal["articles", "youtube", "places", "pdfs", "feeds"]
 
 
 @dataclass

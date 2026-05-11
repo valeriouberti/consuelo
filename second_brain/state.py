@@ -23,7 +23,7 @@ from second_brain.config import vault_path
 
 logger = logging.getLogger(__name__)
 
-SOURCE_TYPES = ("articles", "youtube", "places", "pdfs")
+SOURCE_TYPES = ("articles", "youtube", "places", "pdfs", "feeds")
 SOURCE_EXTENSIONS = {
     "articles": (".html", ".htm", ".md"),
     "youtube": (".txt", ".md"),
@@ -127,6 +127,8 @@ def get_item_id(source_type: str, file_path: Path) -> str:
         return _extract_place_id(file_path) or _relative_id(file_path)
     if source_type == "pdfs":
         raise ValueError("PDF state IDs are Drive fileIds — set them in gather_pdf_sources")
+    if source_type == "feeds":
+        raise ValueError("feed state IDs are entry guid/link — set them in gather_feed_sources")
     raise ValueError(f"unknown source_type: {source_type}")
 
 

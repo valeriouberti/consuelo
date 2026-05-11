@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import sys
@@ -49,23 +50,30 @@ def run(date_str: str | None, dry_run: bool, mode: str | None) -> None:
 
     if date_str:
         try:
-            date_iso = datetime.strptime(date_str, "%Y-%m-%d").date().isoformat()
+            target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
         except ValueError:
             logger.error("invalid --date format, expected YYYY-MM-DD")
             sys.exit(2)
     else:
-        date_iso = (datetime.now() - timedelta(days=1)).date().isoformat()
+        target_date = (datetime.now() - timedelta(days=1)).date()
+    date_iso = target_date.isoformat()
 
     logger.info("target date: %s (mode=%s, dry_run=%s)", date_iso, llm_mode(), dry_run)
 
+    async def _pipeline():
+        sources = await gather_sources(target_date=target_date)
+        if not sources:
+            return sources
+        await embed_sources(sources)
+        await enrich_sources(sources)
+        return sources
+
     sources = []
     try:
-        sources = gather_sources()
+        sources = asyncio.run(_pipeline())
         if not sources:
             logger.info("no new sources to process — nothing to do")
             return
-        embed_sources(sources)
-        enrich_sources(sources)
     except KeyboardInterrupt:
         logger.warning("interrupted — writing partial output")
 

@@ -13,7 +13,7 @@ from second_brain.models import Source
 
 logger = logging.getLogger(__name__)
 
-SOURCE_EMOJI = {"article": "📄", "youtube": "🎬", "place": "📍", "pdf": "📰"}
+SOURCE_EMOJI = {"article": "📄", "youtube": "🎬", "place": "📍", "pdf": "📰", "feed": "📨"}
 
 
 def kebab(tag: str) -> str:
@@ -52,6 +52,9 @@ def _render_section(source: Source) -> str:
     if source.type == "pdf" and source.url:
         drive_name = source.extra.get("drive_name") or "PDF"
         parts.append(f"[Apri {drive_name} su Drive]({source.url})")
+    if source.type == "feed" and source.url:
+        feed_name = source.extra.get("feed_name") or "feed"
+        parts.append(f"_Da {feed_name}_ — [Leggi originale]({source.url})")
     return "\n".join(parts)
 
 

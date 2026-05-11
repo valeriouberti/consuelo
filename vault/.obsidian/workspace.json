@@ -150,12 +150,13 @@
             "state": {
               "type": "outline",
               "state": {
+                "file": "Daily/2026-05-10.md",
                 "followCursor": false,
                 "showSearch": false,
                 "searchQuery": ""
               },
               "icon": "lucide-list",
-              "title": "Outline"
+              "title": "Outline of 2026-05-10"
             }
           }
         ]
@@ -176,8 +177,16 @@
       "bases:Create new base": false
     }
   },
-  "active": "52796df5f9292e50",
+  "active": "5b4c90bf92f12865",
   "lastOpenFiles": [
+    "Inbox/articles/SpaceXAI signs agreement with Anthropic for massive AI supercomputer access.md",
+    "Daily/2026-05-10.md",
+    "Inbox/articles/Untitled.md",
+    "Inbox/newsletter/2026-05-11 - Trump to press Xi on Iran war.md",
+    "Inbox/newsletter/2026-05-11 - Political pressure cooker week.md",
+    "Inbox/newsletter/2026-05-11 - Markets morning briefing_ Shell’s profits jump as Iran war delivers windfall ....md",
+    "Inbox/newsletter/2026-05-11 - email.md",
+    "Inbox/newsletter",
     "Inbox/youtube/2026-05-11_Partita FOLLE a SAN SIRO Milan-Atalanta 2-3  Serie A Enilive  DAZN Highlights.md",
     "Notes/youtube/2026-05-11/2026-05-11_Partita FOLLE a SAN SIRO Milan-Atalanta 2-3  Serie A Enilive  DAZN Highlights.md",
     "Notes/youtube/2026-05-11",

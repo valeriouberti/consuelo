@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 # ---------- embeddings ----------
 
+
 def _embed_local(text: str) -> list[float]:
     import ollama  # type: ignore
 
@@ -76,7 +77,54 @@ def embed_text_safe(text: str, max_chars: int | None = None) -> list[float]:
             payload = payload[:new_len]
 
 
+# ---------- async embeddings ----------
+
+
+async def _embed_local_async(text: str) -> list[float]:
+    import ollama  # type: ignore
+
+    client = ollama.AsyncClient()
+    result = await client.embed(
+        model=ollama_embed_model(),
+        input=text,
+        options={"num_ctx": ollama_embed_num_ctx()},
+    )
+    return list(result["embeddings"][0])
+
+
+async def _embed_cloud_async(text: str) -> list[float]:
+    from openai import AsyncOpenAI  # type: ignore
+
+    client = AsyncOpenAI(api_key=openai_api_key())
+    response = await client.embeddings.create(model=openai_embed_model(), input=text)
+    return list(response.data[0].embedding)
+
+
+async def embed_text_async(text: str) -> list[float]:
+    if llm_mode() == "cloud":
+        return await _embed_cloud_async(text)
+    return await _embed_local_async(text)
+
+
+async def embed_text_safe_async(text: str, max_chars: int | None = None) -> list[float]:
+    """Async twin of ``embed_text_safe`` with the same shrink-on-overflow logic."""
+    limit = max_chars if max_chars is not None else embed_char_limit()
+    payload = text[:limit]
+    while True:
+        try:
+            return await embed_text_async(payload)
+        except Exception as exc:
+            if not _is_context_overflow(exc) or len(payload) <= 500:
+                raise
+            new_len = len(payload) // 2
+            logger.warning(
+                "embed context overflow at %d chars — retrying at %d", len(payload), new_len
+            )
+            payload = payload[:new_len]
+
+
 # ---------- chat completion ----------
+
 
 def _chat_local(system_prompt: str, user_msg: str) -> str:
     import ollama  # type: ignore
@@ -117,7 +165,51 @@ def call_llm(system_prompt: str, user_msg: str) -> str:
     return _chat_local(system_prompt, user_msg)
 
 
+# ---------- async chat completion ----------
+
+
+async def _chat_local_async(system_prompt: str, user_msg: str) -> str:
+    import ollama  # type: ignore
+
+    client = ollama.AsyncClient()
+    response = await client.chat(
+        model=ollama_model(),
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_msg},
+        ],
+        format="json",
+        options={
+            "num_ctx": ollama_chat_num_ctx(),
+            "num_predict": ollama_chat_num_predict(),
+        },
+    )
+    return response["message"]["content"]
+
+
+async def _chat_cloud_async(system_prompt: str, user_msg: str) -> str:
+    from openai import AsyncOpenAI  # type: ignore
+
+    client = AsyncOpenAI(api_key=openai_api_key())
+    response = await client.chat.completions.create(
+        model=openai_model(),
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_msg},
+        ],
+        response_format={"type": "json_object"},
+    )
+    return response.choices[0].message.content or ""
+
+
+async def call_llm_async(system_prompt: str, user_msg: str) -> str:
+    if llm_mode() == "cloud":
+        return await _chat_cloud_async(system_prompt, user_msg)
+    return await _chat_local_async(system_prompt, user_msg)
+
+
 # ---------- prompts ----------
+
 
 @lru_cache(maxsize=8)
 def load_prompt(name: str) -> str:

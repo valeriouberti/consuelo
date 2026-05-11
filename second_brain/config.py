@@ -72,6 +72,70 @@ def gdrive_processed_pdf_folder_id() -> str | None:
     return os.environ.get("GDRIVE_PROCESSED_PDF_FOLDER_ID") or None
 
 
+def async_concurrency() -> int:
+    """Max concurrent async ops (LLM, embed, HTTP fetch).
+
+    Default depends on ``LLM_MODE``:
+
+    - ``cloud``: 8 — comfortably under OpenAI Tier 1 RPM, polite to
+      HTTP origins like TLDR/Substack.
+    - ``local``: 1 — Ollama serializes requests per model, so
+      concurrency adds latency without throughput.
+
+    Override with ``ASYNC_CONCURRENCY`` to tune (e.g. higher OpenAI tier).
+    """
+    raw = os.environ.get("ASYNC_CONCURRENCY")
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            pass
+    return 8 if llm_mode() == "cloud" else 1
+
+
+def feed_max_entries_per_feed() -> int:
+    """Cap on how many entries per feed are considered (most-recent-first).
+
+    Default ``3`` — enough to catch up after weekends/holidays for a
+    typical weekday newsletter, but small enough to avoid replaying old
+    content. State dedup still filters anything already processed, so
+    this is just an upper bound on "what's reasonably recent".
+
+    Set to ``0`` or a negative number to disable the cap (consider every
+    entry the feed exposes — useful for full backfill).
+    """
+    try:
+        return int(os.environ.get("FEED_MAX_ENTRIES_PER_FEED", "3"))
+    except ValueError:
+        return 3
+
+
+def feed_days_back() -> int:
+    """Optional date-window filter, anchored on the run's target date.
+
+    Default ``-1`` — disabled. The recency-based ``feed_max_entries_per_feed``
+    handles freshness for the common case. Use this knob only when you
+    explicitly want a date-anchored window (e.g. ``FEED_DAYS_BACK=7`` for
+    a "everything from the last week" backfill against ``--date``).
+
+    Entries without a parsable publication date are kept regardless.
+    """
+    try:
+        return int(os.environ.get("FEED_DAYS_BACK", "-1"))
+    except ValueError:
+        return -1
+
+
+def feeds_config_path() -> Path:
+    """Path to the RSS/Atom feeds list (JSON array of ``{name, url}``).
+
+    Default: ``$VAULT_PATH/.config/feeds.json``. Missing file is treated
+    as "no feeds configured" — RSS gathering becomes a no-op.
+    """
+    raw = os.environ.get("FEEDS_CONFIG_PATH", str(vault_path() / ".config" / "feeds.json"))
+    return Path(raw).expanduser().resolve()
+
+
 def embed_char_limit() -> int:
     """Max chars sent to embedding model per call.
 
