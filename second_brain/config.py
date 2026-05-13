@@ -32,6 +32,16 @@ def chroma_path() -> Path:
     return Path(raw).expanduser().resolve()
 
 
+def cache_path() -> Path:
+    raw = os.environ.get("CACHE_PATH", str(vault_path() / ".cache"))
+    return Path(raw).expanduser().resolve()
+
+
+def state_path() -> Path:
+    raw = os.environ.get("STATE_PATH", str(vault_path() / ".state"))
+    return Path(raw).expanduser().resolve()
+
+
 def llm_mode() -> str:
     return os.environ.get("LLM_MODE", "local").lower()
 

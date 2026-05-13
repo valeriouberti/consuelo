@@ -19,7 +19,7 @@ from collections.abc import Iterable
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from second_brain.config import vault_path
+from second_brain.config import state_path, vault_path
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ YOUTUBE_URL_RE = re.compile(
 
 
 def _state_dir() -> Path:
-    return vault_path() / ".state"
+    return state_path()
 
 
 def _state_file(source_type: str) -> Path:

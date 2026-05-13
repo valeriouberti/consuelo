@@ -15,7 +15,7 @@ from tqdm import tqdm
 
 from second_brain import state, vector
 from second_brain.archive import EXCLUDED_NOTES_SUBDIRS
-from second_brain.config import async_concurrency, vault_path
+from second_brain.config import async_concurrency, state_path, vault_path
 from second_brain.llm import (
     call_llm_async,
     call_llm_text,
@@ -31,7 +31,7 @@ from second_brain.sources import EXTRACTORS, gather_feed_sources, gather_pdf_sou
 
 logger = logging.getLogger(__name__)
 
-LAST_INDEX_FILE = ".state/last_index.txt"
+LAST_INDEX_FILENAME = "last_index.txt"
 
 
 # ---------- daily recap ----------
@@ -372,7 +372,7 @@ def _normalize_tags(raw) -> list[str]:
 
 
 def _read_last_index() -> float:
-    p = vault_path() / LAST_INDEX_FILE
+    p = state_path() / LAST_INDEX_FILENAME
     if not p.exists():
         return 0.0
     try:
@@ -382,7 +382,7 @@ def _read_last_index() -> float:
 
 
 def _write_last_index(ts: float) -> None:
-    p = vault_path() / LAST_INDEX_FILE
+    p = state_path() / LAST_INDEX_FILENAME
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(f"{ts}\n")
 

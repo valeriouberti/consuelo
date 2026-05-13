@@ -23,7 +23,7 @@ import struct
 import threading
 from pathlib import Path
 
-from second_brain.config import vault_path
+from second_brain.config import cache_path
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +43,7 @@ _lock = threading.Lock()
 
 
 def _db_path() -> Path:
-    return vault_path() / ".cache" / _DB_FILENAME
+    return cache_path() / _DB_FILENAME
 
 
 def _connection() -> sqlite3.Connection:
