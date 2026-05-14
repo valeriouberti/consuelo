@@ -127,19 +127,19 @@ def feed_max_entries_per_feed() -> int:
 
 
 def feed_days_back() -> int:
-    """Optional date-window filter, anchored on the run's target date.
+    """Date-window filter, anchored on the run's target date.
 
-    Default ``-1`` — disabled. The recency-based ``feed_max_entries_per_feed``
-    handles freshness for the common case. Use this knob only when you
-    explicitly want a date-anchored window (e.g. ``FEED_DAYS_BACK=7`` for
-    a "everything from the last week" backfill against ``--date``).
+    Default ``0`` — today only. Run picks up entries published the same
+    day as ``target_date``; state dedup ensures multiple runs on the same
+    day only fetch the delta. Raise (e.g. ``FEED_DAYS_BACK=7``) for a
+    backfill window; set negative to disable the date filter entirely.
 
     Entries without a parsable publication date are kept regardless.
     """
     try:
-        return int(os.environ.get("FEED_DAYS_BACK", "-1"))
+        return int(os.environ.get("FEED_DAYS_BACK", "0"))
     except ValueError:
-        return -1
+        return 0
 
 
 def feeds_config_path() -> Path:

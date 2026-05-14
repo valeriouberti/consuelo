@@ -7,7 +7,7 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime
+from datetime import date, datetime
 
 import click
 from dotenv import load_dotenv
@@ -63,7 +63,7 @@ def run(dry_run: bool, mode: str | None) -> None:
     reset_usage()
 
     async def _pipeline():
-        sources = await gather_sources(target_date=None)
+        sources = await gather_sources(target_date=date.today())
         if not sources:
             return sources
         await embed_sources(sources)
@@ -77,7 +77,7 @@ def run(dry_run: bool, mode: str | None) -> None:
         logger.warning("interrupted — partial state, nothing committed")
         return
 
-    SUPPORTED_TYPES = {"article", "youtube"}
+    SUPPORTED_TYPES = {"article", "youtube", "feed"}
     processable = [s for s in sources if s.type in SUPPORTED_TYPES]
     skipped = [s for s in sources if s.type not in SUPPORTED_TYPES]
     if skipped:

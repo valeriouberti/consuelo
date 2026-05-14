@@ -21,3 +21,4 @@ vault/.cache/
 .idea/
 .DS_Store
 credentials/
+second-brain.code-workspace
