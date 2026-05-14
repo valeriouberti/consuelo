@@ -13,10 +13,10 @@ from pathlib import Path
 import frontmatter
 from tqdm import tqdm
 
-from second_brain import state, vector
-from second_brain.archive import EXCLUDED_NOTES_SUBDIRS
-from second_brain.config import async_concurrency, state_path, vault_path
-from second_brain.llm import (
+from consuelo import state, vector
+from consuelo.archive import EXCLUDED_NOTES_SUBDIRS
+from consuelo.config import async_concurrency, state_path, vault_path
+from consuelo.llm import (
     call_llm_async,
     call_llm_text,
     embed_text,
@@ -25,9 +25,9 @@ from second_brain.llm import (
     load_prompt,
     parse_llm_json,
 )
-from second_brain.models import Source
-from second_brain.rendering import kebab
-from second_brain.sources import EXTRACTORS, gather_feed_sources, gather_pdf_sources
+from consuelo.models import Source
+from consuelo.rendering import kebab
+from consuelo.sources import EXTRACTORS, gather_feed_sources, gather_pdf_sources
 
 logger = logging.getLogger(__name__)
 
@@ -212,7 +212,7 @@ async def classify_sources(sources: list[Source]) -> None:
     enriched fields are filled in place; ``source.category`` drives the
     destination folder in ``write_classified_note``.
     """
-    from second_brain.archive import existing_categories
+    from consuelo.archive import existing_categories
 
     collection = vector.open_collection()
     categories = existing_categories()

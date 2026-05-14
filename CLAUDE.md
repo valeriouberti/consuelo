@@ -1,4 +1,4 @@
-# Second Brain — Project Context
+# Consuelo — Project Context
 
 ## Progetto
 Workflow Python che processa contenuti salvati nella vault Obsidian
@@ -28,10 +28,10 @@ per-item flow (TODO: prossima iterazione).
 
 ## Struttura repo
 ```
-second-brain/
-├── second_brain/
+consuelo/
+├── consuelo/
 │   ├── __init__.py
-│   ├── __main__.py            # python -m second_brain
+│   ├── __main__.py            # python -m consuelo
 │   ├── cli.py                 # click: run + ask + index
 │   ├── config.py              # tutti gli os.environ.get() vivono qui
 │   ├── models.py              # Source dataclass + status + category
@@ -100,14 +100,14 @@ Legacy `archive_sources`/`archive_previous_daily` non più chiamati.
 ## Comandi principali
 ```bash
 pip install -e ".[dev]"                # setup
-second-brain run                        # per-item: articles → Notes/<Categoria>/
-second-brain run --dry-run              # render su stdout, no scrittura
-second-brain run --mode cloud           # override OPENAI
-second-brain ask "query"                # RAG su Notes/ + Daily/
-second-brain ask "query" -k 15          # top-K vault entries
-second-brain index                      # indicizza Notes/ + Daily/ in Chroma
-second-brain index --incremental        # solo mtime > last_index
-second-brain index --no-daily           # skip Daily/, solo Notes/
+consuelo run                        # per-item: articles → Notes/<Categoria>/
+consuelo run --dry-run              # render su stdout, no scrittura
+consuelo run --mode cloud           # override OPENAI
+consuelo ask "query"                # RAG su Notes/ + Daily/
+consuelo ask "query" -k 15          # top-K vault entries
+consuelo index                      # indicizza Notes/ + Daily/ in Chroma
+consuelo index --incremental        # solo mtime > last_index
+consuelo index --no-daily           # skip Daily/, solo Notes/
 pytest                                  # test
 ruff check . && ruff format .           # lint + format
 ```
@@ -153,25 +153,25 @@ FEED_DAYS_BACK=-1                       # date window opzionale, -1 = disabled
 
 # --- Legacy ---
 PINECONE_API_KEY=
-PINECONE_INDEX=second-brain
+PINECONE_INDEX=consuelo
 ```
 
-Tutti gli accessi env vivono in `second_brain/config.py`. Non leggere
+Tutti gli accessi env vivono in `consuelo/config.py`. Non leggere
 `os.environ` altrove.
 
 ## Mappa moduli (orientamento rapido)
 | Cosa modificare | File |
 |-----------------|------|
-| Aggiungere/rinominare env var | `second_brain/config.py` |
-| Nuova sorgente (es. Reddit) | `second_brain/sources.py` + flow in `pipeline.gather_sources` |
-| Output formato nota classificata | `second_brain/rendering.py::render_classified_note` |
-| Orchestratore (gather→embed→classify→write) | `second_brain/pipeline.py` |
-| Backend LLM (nuovo provider) | `second_brain/llm.py` (sync + async + retry) |
-| Cache embedding | `second_brain/embedding_cache.py` |
-| Vector store (Pinecone) | `second_brain/vector.py` |
-| Logica dedup/state | `second_brain/state.py` |
-| Drive operations | `second_brain/drive.py` |
-| Comandi CLI | `second_brain/cli.py` |
+| Aggiungere/rinominare env var | `consuelo/config.py` |
+| Nuova sorgente (es. Reddit) | `consuelo/sources.py` + flow in `pipeline.gather_sources` |
+| Output formato nota classificata | `consuelo/rendering.py::render_classified_note` |
+| Orchestratore (gather→embed→classify→write) | `consuelo/pipeline.py` |
+| Backend LLM (nuovo provider) | `consuelo/llm.py` (sync + async + retry) |
+| Cache embedding | `consuelo/embedding_cache.py` |
+| Vector store (Pinecone) | `consuelo/vector.py` |
+| Logica dedup/state | `consuelo/state.py` |
+| Drive operations | `consuelo/drive.py` |
+| Comandi CLI | `consuelo/cli.py` |
 | Prompt sistema | `prompts/*.txt` (no rebuild, `@lru_cache(8)` reload manuale) |
 
 ## Formato nota classificata (Notes/<Categoria>/<slug>.md)
@@ -215,7 +215,7 @@ Workflow **idempotente**. Ogni sorgente ha `vault/.state/processed_<source>.json
 - **PDFs**: ID = Drive `fileId` (immutabile)
 - **Feeds**: ID = entry `guid`/`link`
 
-API pubblica (`second_brain/state.py`):
+API pubblica (`consuelo/state.py`):
 ```python
 get_new_items(source_type, inbox_path) -> list[Path]   # filesystem-based
 filter_unseen(source_type, ids)        -> list[str]    # generic (Drive/feed)

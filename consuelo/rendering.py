@@ -9,8 +9,8 @@ from pathlib import Path
 
 import frontmatter
 
-from second_brain.config import vault_path
-from second_brain.models import Source
+from consuelo.config import vault_path
+from consuelo.models import Source
 
 logger = logging.getLogger(__name__)
 
@@ -156,10 +156,26 @@ def safe_filename(title: str, max_len: int = 100) -> str:
 
 
 def _safe_category(category: str) -> str:
-    """Sanitize an LLM-proposed category for use as a folder name."""
+    """Sanitize an LLM-proposed category for use as a folder name.
+
+    Strips filesystem-unsafe chars and collapses whitespace. If the
+    sanitized name matches an existing vault category up to
+    underscore/space and case folding, the existing folder name is
+    returned verbatim — prevents near-duplicate folders like
+    ``System Design/`` next to ``System_Design/``.
+    """
     c = re.sub(r"[\\/:*?\"<>|\r\n\t]", " ", category).strip()
     c = re.sub(r"\s+", " ", c)
-    return c[:80] or "Uncategorized"
+    if not c:
+        return "Uncategorized"
+    c = c[:80]
+    from consuelo.archive import existing_categories
+
+    norm = c.replace("_", " ").casefold()
+    for existing in existing_categories():
+        if existing.replace("_", " ").casefold() == norm:
+            return existing
+    return c
 
 
 _YOUTUBE_META_FIELDS = ("channel", "published", "duration", "thumbnail")

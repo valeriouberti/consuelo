@@ -13,8 +13,8 @@ from urllib.parse import parse_qs, urlparse
 
 import frontmatter
 
-from second_brain import drive, state
-from second_brain.config import (
+from consuelo import drive, state
+from consuelo.config import (
     async_concurrency,
     feed_days_back,
     feed_max_entries_per_feed,
@@ -23,8 +23,8 @@ from second_brain.config import (
     gdrive_processed_pdf_folder_id,
     google_maps_api_key,
 )
-from second_brain.llm import _retry_async
-from second_brain.models import Source
+from consuelo.llm import _retry_async
+from consuelo.models import Source
 
 logger = logging.getLogger(__name__)
 
@@ -488,7 +488,7 @@ def archive_pdf_sources(sources: list[Source]) -> int:
 
 FEED_MIN_BODY_CHARS = 400  # below → assume headlines-only, fetch link
 FEED_FETCH_TIMEOUT_S = 15
-FEED_USER_AGENT = "second-brain/0.1 (+https://github.com/) feedparser"
+FEED_USER_AGENT = "consuelo/0.1 (+https://github.com/) feedparser"
 
 
 def _load_feeds_config() -> list[dict]:

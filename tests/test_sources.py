@@ -1,4 +1,4 @@
-"""Unit tests for second_brain.sources."""
+"""Unit tests for consuelo.sources."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from pathlib import Path
 
 from unittest.mock import patch
 
-from second_brain.sources import _youtube_metadata_from_md, extract_article
+from consuelo.sources import _youtube_metadata_from_md, extract_article
 
 
 def test_extract_article_markdown_uses_frontmatter(vault: Path) -> None:
@@ -70,7 +70,7 @@ class _FakeSnippet:
 
 
 def test_extract_youtube_md_uses_frontmatter_title(vault: Path) -> None:
-    from second_brain.sources import extract_youtube
+    from consuelo.sources import extract_youtube
 
     f = vault / "Inbox" / "youtube" / "talk.md"
     f.write_text(

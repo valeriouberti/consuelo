@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from second_brain.config import chroma_path
+from consuelo.config import chroma_path
 
 logger = logging.getLogger(__name__)
 

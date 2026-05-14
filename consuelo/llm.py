@@ -8,7 +8,7 @@ import logging
 from functools import lru_cache
 from pathlib import Path
 
-from second_brain.config import (
+from consuelo.config import (
     PROMPTS_DIR,
     embed_char_limit,
     llm_mode,
@@ -175,7 +175,7 @@ def _embed_cloud(text: str) -> list[float]:
 
 
 def embed_text(text: str) -> list[float]:
-    from second_brain import embedding_cache  # local import: avoid cycles
+    from consuelo import embedding_cache  # local import: avoid cycles
 
     model_key = _cache_model_key()
     cached = embedding_cache.get(text, model_key)
@@ -240,7 +240,7 @@ async def _embed_cloud_async(text: str) -> list[float]:
 
 
 async def embed_text_async(text: str) -> list[float]:
-    from second_brain import embedding_cache  # local import: avoid cycles
+    from consuelo import embedding_cache  # local import: avoid cycles
 
     model_key = _cache_model_key()
     cached = await asyncio.to_thread(embedding_cache.get, text, model_key)

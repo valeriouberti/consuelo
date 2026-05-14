@@ -1,338 +1,366 @@
-# Second Brain
+# Consuelo
 
-Workflow Python che processa contenuti salvati nella tua vault Obsidian
-(articoli web, transcript YouTube, place Google Maps, PDF su Google Drive,
-RSS feed) e li trasforma in note arricchite: ogni item viene classificato
-da un LLM, ottiene categoria + tag + summary + correlations con le tue
-note esistenti, e finisce in `Notes/<Categoria>/<slug>.md`.
+> Turn your Obsidian vault into a self-organising knowledge base. Drop articles, YouTube videos, RSS items, Google Drive PDFs, or Maps places into an inbox — let an LLM classify, summarise, tag, and cross-link each one into the right folder, with semantic search across the whole vault.
 
-Include un comando RAG `ask` per interrogare l'intera vault in linguaggio
-naturale.
+[![Python](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Code style: Ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
+[![Tests](https://img.shields.io/badge/tests-22%20passing-success.svg)](#development)
+[![LLM: local or cloud](https://img.shields.io/badge/LLM-Ollama%20%7C%20OpenAI-purple.svg)](#models)
 
-## Quick start (5 comandi)
+---
 
-```bash
-git clone <repo> second-brain && cd second-brain
-python3.12 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
-cp .env.example .env                # modifica i valori
-mkdir -p vault/{Inbox/{articles,youtube,places},Notes}
+## Why
+
+Personal note-taking systems decay. You save things faster than you can file them; "read later" turns into "never read"; useful notes from months ago vanish because you don't remember the right keyword.
+
+**Consuelo** is an opinionated automation layer on top of Obsidian that:
+
+- 📥 **Ingests** content from 5 source types: web articles, YouTube transcripts, Maps places, Google Drive PDFs, RSS/Atom feeds.
+- 🧠 **Classifies** each item with an LLM into one of your existing domain folders (or proposes a new one), generating a 3–5 sentence summary, kebab-case tags, and wiki-link correlations to related notes.
+- 🔁 **Stays idempotent**: re-running the workflow only processes new items thanks to per-source state files.
+- 🔎 **Lets you ask questions** over the whole vault via RAG (`consuelo ask "…"`) — answers are grounded in your notes with explicit `[[wiki-links]]` as citations.
+- 🏠 **Runs fully local** by default (Ollama + ChromaDB + SQLite cache, zero external calls), or in **cloud mode** (OpenAI) when you need the speed.
+
+The output is regular Obsidian markdown — your knowledge stays in plain files, portable forever.
+
+---
+
+## How it works
+
+```mermaid
+flowchart LR
+    subgraph Inputs["📥 Inbox / external sources"]
+        A1[Web articles<br/>.html · .md]
+        A2[YouTube<br/>.txt · .md]
+        A3[Google Maps<br/>.json]
+        A4[Google Drive<br/>PDFs]
+        A5[RSS / Atom<br/>feeds.json]
+    end
+
+    subgraph Pipeline["⚙️ Async pipeline"]
+        direction TB
+        P1[gather_sources] --> P2[embed_sources<br/>cache-aware]
+        P2 --> P3[classify_sources<br/>LLM + correlations]
+        P3 --> P4[render &amp; write]
+        P4 --> P5[commit state<br/>+ consume inbox]
+    end
+
+    subgraph Outputs["📝 Obsidian vault"]
+        O1["Notes/&lt;Category&gt;/&lt;slug&gt;.md"]
+        O2[(ChromaDB<br/>vector store)]
+        O3[(SQLite<br/>embedding cache)]
+        O4[(State files<br/>idempotency)]
+    end
+
+    Inputs --> Pipeline
+    Pipeline --> Outputs
+    O1 -.indexed.-> O2
+    O2 -.semantic search.-> Q[/"consuelo ask &quot;…&quot;"/]
 ```
 
-### Modalità locale (Ollama, gratis, offline)
+A typical run looks like this:
+
+```
+$ consuelo run
+INFO mode=cloud, dry_run=False
+INFO gathered 12 sources (8 article, 4 feed) in 1.4s
+INFO embeddings: 9 cache hits, 3 API calls
+INFO wrote Notes/Tech/Kubernetes-Operators-Pattern.md [article, Tech]
+INFO wrote Notes/Finance/Fed-Rate-Cut-September.md [article, Finance]
+…
+INFO cost: $0.0042 (chat 1240/380 @ gpt-4o-mini | embed 2100 @ text-embedding-3-small)
+```
+
+---
+
+## Highlights
+
+| Feature | Detail |
+|---|---|
+| 🪪 **Two LLM backends** | Ollama (local, free, offline) or OpenAI (faster, ~$0.01 per 100 articles) — toggled by a single env var. |
+| ⚡ **Async pipeline** | Embed + classify + URL fetch run concurrently. ~5× speedup on cloud mode vs. sequential. |
+| 💾 **Content-addressed cache** | SHA-256 keyed SQLite cache for embeddings. Re-processing the same text costs zero API calls. |
+| 🧭 **Auto-categorisation** | LLM is shown the existing folders under `Notes/` and reuses them — no near-duplicates ("AI" vs "Artificial Intelligence" collapse). Space/underscore normalisation prevents folder duplication. |
+| 🔗 **Semantic correlations** | Each new note is linked to its top-K most similar existing notes via Chroma vector search. |
+| 📰 **RSS-aware** | Top-N most-recent entries per feed, today-only date filter by default, falls back to fetching `entry.link` for headline-only feeds (TLDR, Hacker News). |
+| 🗂️ **PDF from Drive** | Service-account integration — drop PDFs in a shared Drive folder, get them processed and archived automatically. |
+| 🔁 **Idempotent** | Per-source state files (`.state/processed_*.json`) dedupe across runs. Safe to schedule via cron. |
+| 💬 **RAG `ask`** | Natural-language Q&A grounded in your own notes with wiki-link citations. |
+| 🌐 **Bilingual output** | Generated summary + tags match the input language (Italian → Italian, English → English, anything else → English). |
+
+---
+
+## Quick start
 
 ```bash
+# 1 — Clone & install
+git clone https://github.com/valeriouberti/consuelo.git
+cd consuelo
+python3.12 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+
+# 2 — Configure
+cp .env.example .env                # edit VAULT_PATH, choose LLM_MODE, etc.
+
+# 3 — Pick a backend
+# Local (default) — install Ollama, pull models:
 ollama serve &
 ollama pull qwen2.5:14b
 ollama pull nomic-embed-text-8k
+
+# OR Cloud — set in .env:
+#   LLM_MODE=cloud
+#   OPENAI_API_KEY=sk-…
+
+# 4 — Drop content & run
+echo "<html>…</html>" > "$VAULT_PATH/Inbox/articles/my-article.html"
+consuelo run
 ```
 
-### Modalità cloud (OpenAI, veloce, paghi)
+That's it. Output lands in `$VAULT_PATH/Notes/<Category>/<slug>.md`, ready to open in Obsidian.
 
-Imposta in `.env`:
-```
-LLM_MODE=cloud
-OPENAI_API_KEY=sk-...
-```
+---
 
-## Cosa fa il workflow
+## Commands
 
-```
-Inbox/articles/<file>.html|.md
-    ↓
-[extract]  readability → markdown via markdownify
-    ↓
-[embed]    cache hit O(1) o API call
-    ↓
-[classify] LLM → JSON {category, summary, tags, correlations}
-    ↓
-[write]    Notes/<Categoria>/<slug>.md (frontmatter + summary + body)
-    ↓
-[cleanup]  delete Inbox file, mark state processed
+```bash
+# Per-item processing (Inbox/ → Notes/<Category>/)
+consuelo run
+consuelo run --dry-run                  # render to stdout, no writes
+consuelo run --mode cloud               # one-off override of LLM_MODE
+
+# RAG over the indexed vault
+consuelo ask "what have I read about Kubernetes operators?"
+consuelo ask "places I want to visit in Berlin" -k 12
+
+# Build / refresh the vector index (Notes/ + Daily/)
+consuelo index
+consuelo index --incremental            # only files modified since last run
+consuelo index --no-daily               # Notes/ only
 ```
 
-### Output `.md` finale
+---
+
+## Architecture at a glance
+
+```mermaid
+flowchart TB
+    CLI["consuelo CLI<br/>(click)"] --> Pipeline
+
+    subgraph Pipeline["pipeline.py — async orchestrator"]
+        Gather[gather_sources] --> Embed[embed_sources]
+        Embed --> Classify[classify_sources]
+        Classify --> Render[render &amp; write]
+    end
+
+    Gather --> Sources["sources.py<br/>(article · YouTube · place · feed)"]
+    Gather --> Drive["drive.py<br/>(PDF via Service Account)"]
+    Embed --> LLM
+    Embed --> Cache["embedding_cache.py<br/>(SQLite, SHA-256 keyed)"]
+    Classify --> LLM["llm.py<br/>(Ollama · OpenAI, retry, cost tracking)"]
+    Classify --> Vector
+    Render --> Rendering["rendering.py<br/>(frontmatter + body)"]
+    Render --> Vault[("Obsidian vault<br/>Notes/<Category>/")]
+    Render --> State["state.py<br/>(.state/processed_*.json)"]
+    Vector["vector.py<br/>(ChromaDB)"] --> ChromaDB[("Chroma<br/>persistent")]
+
+    Config["config.py<br/>(all env vars live here)"] -.-> Pipeline
+    Config -.-> LLM
+    Config -.-> Vector
+
+    style Vault fill:#1a3d52,color:#fff
+    style ChromaDB fill:#2d4a1f,color:#fff
+    style Cache fill:#5a3a1a,color:#fff
+    style State fill:#5a1a3d,color:#fff
+```
+
+Full breakdown → [`docs/architecture.md`](docs/architecture.md).
+
+---
+
+## Output format
+
+Each classified item becomes a self-contained markdown file:
 
 ```markdown
 ---
 category: Tech
-correlations: ['[[Notes/Kubernetes/Basics]]']
-date_processed: '2026-05-11'
-source: https://www.ft.com/content/...
-tags: [kubernetes, operators, platform-engineering]
+correlations:
+  - '[[Notes/Tech/Python/FastAPI-Async-Patterns]]'
+date_processed: '2026-05-14'
+source: https://example.com/k8s-operators
+tags:
+  - kubernetes
+  - operators
+  - platform-engineering
 title: Kubernetes Operators Pattern
 ---
 
-## 📝 Summary _(generated 2026-05-11)_
-> Sintesi 3-5 frasi LLM-curate.
+## 📝 Summary _(generated 2026-05-14)_
+> The Operator pattern packages Kubernetes-native automation as
+> domain-specific controllers. It extends the control plane with
+> custom resources whose state is reconciled by user code…
 
-**Tag**: #kubernetes #operators #platform-engineering
-**Connesso a**: [[Notes/Kubernetes/Basics]]
+**Tags**: #kubernetes #operators #platform-engineering
+**Related**: [[Notes/Tech/Python/FastAPI-Async-Patterns]]
 
 ---
 
 # Kubernetes Operators Pattern
 
-<body originale markdown preservato>
+<original article body, preserved as markdown>
 ```
 
-## Struttura vault
+Folder placement is decided by the classifier and constrained to the categories that already exist under `Notes/` (the LLM is shown the list as a hint). Near-duplicate folder names are folded together (`System Design` ↔ `System_Design`) to keep the vault tidy.
 
-```
-vault/
-├── Inbox/                          # input transitorio
-│   ├── articles/                   # .html (Web Clipper, curl) o .md
-│   ├── youtube/                    # .txt (URL) o .md (TODO per-item)
-│   └── places/                     # .json (TODO per-item)
-├── Notes/                          # OUTPUT + tue note personali
-│   ├── Tech/                       # auto-create dal classifier
-│   ├── Finance/
-│   ├── Travel/
-│   └── <Le tue note>/              # indicizzate per correlations
-├── .config/
-│   └── feeds.json                  # lista RSS (opzionale)
-├── .state/                         # delta tracking (gitignored)
-├── .cache/                         # embedding cache (gitignored)
-└── .chroma/                        # vector store (gitignored)
-```
-
-**Categoria libera con hint**: il classifier riceve la lista delle
-cartelle già esistenti sotto `Notes/` e preferisce riusarle invece di
-inventare duplicati ("AI" vs "Artificial Intelligence" → sceglie quella
-esistente).
-
-## Comandi
-
-```bash
-# Processa articoli in Inbox
-second-brain run
-second-brain run --dry-run                  # stampa output, no scrittura
-second-brain run --mode cloud               # override OpenAI
-
-# RAG sulle tue note + Daily
-second-brain ask "cosa ho letto sui Kubernetes operators?"
-second-brain ask "ricorda i posti che voglio visitare a Berlino" -k 12
-
-# Indicizza vault (Notes/ + Daily/) per le correlations
-second-brain index
-second-brain index --incremental            # solo file modificati
-second-brain index --no-daily               # solo Notes/
-
-# Equivalente senza entrypoint installato
-python -m second_brain run
-```
-
-## Come aggiungere contenuti
-
-### Articoli (`Inbox/articles/`)
-
-Estensioni: `.html`, `.htm`, `.md`.
-
-**HTML manuale** — salva la pagina con `Cmd+S` come `.html`:
-```bash
-curl -sL "https://example.com/post" -o vault/Inbox/articles/2026-05-11_slug.html
-```
-
-**Obsidian Web Clipper (Markdown)** — configura output `vault/Inbox/articles/`,
-frontmatter così:
-```yaml
----
-title: "Titolo Articolo"      # usato come slug filename
-source: "https://..."         # URL canonico (o `url:`)
-clipped_at: 2026-05-11
 ---
 
-Body dell'articolo in markdown.
-```
+## Configuration
 
-Senza frontmatter: `title = nome file` e `url = file://...`.
+All environment variables are read in `consuelo/config.py` (nothing reaches `os.environ` outside that module). Highlights:
 
-### YouTube (TODO)
+| Variable | Default | Purpose |
+|---|---|---|
+| `VAULT_PATH` | `./vault` | Obsidian vault root. |
+| `LLM_MODE` | `local` | `local` (Ollama) or `cloud` (OpenAI). |
+| `OLLAMA_MODEL` / `OLLAMA_EMBED_MODEL` | `qwen2.5:14b` / `nomic-embed-text-8k` | Local models. |
+| `OPENAI_MODEL` / `OPENAI_EMBED_MODEL` | `gpt-4o-mini` / `text-embedding-3-small` | Cloud models. |
+| `ASYNC_CONCURRENCY` | 8 cloud, 1 local | Semaphore cap. |
+| `EMBED_CHAR_LIMIT` | 20000 | Auto-shrinks long inputs to fit the embed model's context. |
+| `FEED_MAX_ENTRIES_PER_FEED` | 3 | Top-N entries per RSS feed per run. |
+| `FEED_DAYS_BACK` | 0 | `0` = today-only; `N>0` = backfill N days; `-1` = disable date filter. |
+| `CHROMA_PATH` | `./vault/.chroma` | Where the vector store lives. |
+| `LOG_LEVEL` | `INFO` | `DEBUG` for verbose tracing. |
 
-Estensioni: `.txt` (URL nudo) o `.md` (frontmatter + URL).
-Attualmente **gathered ma non scritti** nel per-item flow. Verranno
-implementati nella prossima iterazione.
+Full reference → [`docs/configuration.md`](docs/configuration.md).
 
-### Place Google Maps (TODO)
+---
 
-`.json` in `Inbox/places/`. Stessa nota: gathered ma non scritti.
+## Adding content
 
-```json
-{
-  "source": "google_maps",
-  "place_id": "ChIJ...",
-  "name": "Osteria da Mario",
-  "category": "Ristorante italiano",
-  "address": "Via Colleoni 4, Bergamo",
-  "rating": 4.6,
-  "url": "https://maps.google.com/?cid=...",
-  "notes_personali": "consigliato da Luca"
-}
-```
+Each source type has its own conventions. See [`docs/sources.md`](docs/sources.md) for the full guide; quick links:
 
-### PDF (Google Drive)
+- 📄 **Web articles** — drop `.html` or `.md` into `Inbox/articles/`. Use the Obsidian Web Clipper or `curl`.
+- 🎬 **YouTube** — `.txt` (URL only) or `.md` in `Inbox/youtube/`. Gathered today; per-item flow in the next iteration.
+- 📍 **Maps places** — `.json` in `Inbox/places/`. Same status as YouTube.
+- 📰 **RSS feeds** — declare them in `feeds.json` (path configurable via `FEEDS_CONFIG_PATH`).
+- 📕 **Drive PDFs** — service-account auth, two folder IDs in `.env`, files move from `Inbox/PDFs/` to `Processed/PDFs/` after processing.
 
-PDF non vivono in git/vault — su Drive, source of truth. Pipeline legge,
-estrae articoli con heading-detection font-size, scrive note arricchite.
+---
 
-**Setup una tantum**:
-
-1. Crea Service Account su Google Cloud → scarica JSON key
-2. Crea 2 cartelle Drive: `Inbox/PDFs/` e `Processed/PDFs/`
-3. Condividile come **Editor** con email service account
-4. Copia folder ID dall'URL Drive e metti in `.env`:
-   ```
-   GDRIVE_CREDENTIALS_JSON=/path/sa.json
-   GDRIVE_INBOX_PDF_FOLDER_ID=1AbC...
-   GDRIVE_PROCESSED_PDF_FOLDER_ID=1XyZ...
-   ```
-
-Quotidiano: salvi PDF su `Inbox/PDFs/` su Drive. Pipeline scarica,
-processa, sposta a `Processed/PDFs/`.
-
-### RSS feed (Newsletter)
-
-Crea `vault/.config/feeds.json`:
-```json
-[
-  {"name": "TLDR Tech", "url": "https://tldr.tech/api/rss/tech"},
-  {"name": "TLDR AI",   "url": "https://tldr.tech/api/rss/ai"}
-]
-```
-
-Feed top-N entries più recenti per feed (default 3). Per newsletter
-email-only (FT, WSJ), opzioni:
-1. Cerca RSS premium subscriber (FT `myFT > Feeds`)
-2. **Kill the Newsletter** — `kill-the-newsletter.com` genera email
-   anonimo che converte newsletter in feed RSS
-
-`FEED_MAX_ENTRIES_PER_FEED=N` per cambiare cap (recovery dopo weekend).
-
-## Comando `ask` (RAG)
-
-Interroga la vault in linguaggio naturale:
+## RAG: ask your vault
 
 ```bash
-second-brain ask "quali pattern distribuiti ho studiato?"
+$ consuelo ask "what distributed-consensus algorithms have I studied?"
+
+You've covered Raft consensus in [[Notes/System_Design/Raft]] and the
+foundational paper on Paxos in [[Notes/System_Design/Paxos]], with a
+focus on leader election and log replication invariants…
+
+## Sources
+- [[Notes/System_Design/Raft]] — Raft consensus algorithm
+- [[Notes/System_Design/Paxos]] — Multi-Paxos overview
 ```
 
-Embedda la query → cerca top-K entries in Chroma (Notes/ + Daily/) →
-LLM risponde con citation wiki-link. Richiede `second-brain index` una
-volta per popolare il vector store.
+The query is embedded → ChromaDB returns the top-K matches → the LLM answers in markdown with explicit `[[wiki-link]]` citations to your notes. Run `consuelo index` once before `ask` to populate the vector store.
 
-Output stdout, formato:
-```markdown
-Negli ultimi mesi hai studiato consensus distribuito tramite Raft
-[[Notes/Distributed/Raft]] e Paxos [[Notes/Distributed/Paxos]]...
+Details on the prompt + retrieval strategy → [`docs/architecture.md#rag`](docs/architecture.md#rag).
 
-## Fonti
-- [[Notes/Distributed/Raft]] — Raft consensus
-- [[Notes/Distributed/Paxos]] — Multi-Paxos
-```
+---
 
-## Configurazione `.env`
+## Models
 
-Vedi `.env.example` per la lista completa. Variabili principali:
+| Mode | Chat model | Embed model | Speed | Cost |
+|---|---|---|---|---|
+| `local` (default) | `qwen2.5:14b` via Ollama | `nomic-embed-text-8k` | ~12s/article | $0 |
+| `cloud` | `gpt-4o-mini` | `text-embedding-3-small` | ~2s/article | ~$0.01 / 100 articles |
 
-| Env | Default | Uso |
-|-----|---------|-----|
-| `VAULT_PATH` | `./vault` | Root vault Obsidian |
-| `LLM_MODE` | `local` | `local` (Ollama) o `cloud` (OpenAI) |
-| `ASYNC_CONCURRENCY` | 8 cloud, 1 local | Concurrent LLM/embed/HTTP |
-| `EMBED_CHAR_LIMIT` | 20000 | Auto-shrink su context overflow |
-| `FEED_MAX_ENTRIES_PER_FEED` | 3 | Top-N per feed |
-| `LOG_LEVEL` | INFO | DEBUG per verbose |
+The cost tracker (cloud mode only) logs an end-of-run summary:
 
-### Modelli
-
-- **Local Ollama** (default): `qwen2.5:14b` (chat) + `nomic-embed-text-8k` (embed)
-  - Tradeoff: gratis, offline, ~12s per articolo
-- **Cloud OpenAI**: `gpt-4o-mini` + `text-embedding-3-small`
-  - Tradeoff: ~$0.01 per 100 articoli, ~2s per articolo
-
-## Async + cache
-
-Pipeline parallelizza embed + LLM + URL fetch via `asyncio` + `httpx`.
-Cloud: ~5x speedup vs sync. Local: serializzato da Ollama, ma codice
-compatible.
-
-**Embedding cache** SQLite in `vault/.cache/embeddings.db`. Stesso
-articolo re-processed = 0 chiamate API embed. Cache namespace per modello
-(cambio modello = cache separata).
-
-## Cost tracking
-
-Cloud mode logga a fine run:
 ```
 INFO embedding cache: 17 hits
-INFO cost: $0.0042 (chat: 1240 prompt + 380 completion @ gpt-4o-mini
-              | embed: 2100 @ text-embedding-3-small)
+INFO cost: $0.0042 (chat 1240 prompt + 380 completion @ gpt-4o-mini
+              | embed 2100 @ text-embedding-3-small)
 ```
 
-Pricing hardcoded in `llm.py::_PRICING_PER_1M_USD`, sync manuale con
-[OpenAI pricing](https://openai.com/api/pricing/).
+Pricing is hard-coded in `llm.py::_PRICING_PER_1M_USD` — sync periodically with [OpenAI pricing](https://openai.com/api/pricing/).
 
-## Cron / automation
+---
 
-**Crontab macOS** (ogni mattina alle 07:00):
-```cron
-0 7 * * * cd /Users/<you>/path/to/second-brain && /Users/<you>/path/to/second-brain/.venv/bin/second-brain run >> /tmp/second-brain.log 2>&1
+## Project layout
+
+```
+consuelo/
+├── consuelo/
+│   ├── cli.py                 # click: run · ask · index
+│   ├── config.py              # all env vars live here
+│   ├── models.py              # Source dataclass
+│   ├── sources.py             # extractors per source type
+│   ├── drive.py               # Google Drive client
+│   ├── llm.py                 # sync + async LLM, retry, cost
+│   ├── embedding_cache.py     # SQLite cache
+│   ├── vector.py              # ChromaDB wrapper
+│   ├── rendering.py           # frontmatter + body assembly
+│   ├── state.py               # idempotency
+│   ├── archive.py             # category helpers
+│   └── pipeline.py            # async orchestrator
+├── prompts/                   # classify · ask · recap (LLM system prompts)
+├── docs/                      # architecture, pipeline, sources, configuration
+├── tests/                     # pytest (22 passing)
+├── scripts/                   # one-off utilities
+├── pyproject.toml             # hatchling, ruff, mypy, pytest
+└── .env.example
 ```
 
-Per GitHub Actions in produzione: setup OAuth/SA + vault sync (rsync,
-git LFS, S3). TODO esempio workflow.
+Module-by-module breakdown → [`docs/architecture.md`](docs/architecture.md).
 
-## Sviluppo
+---
+
+## Development
 
 ```bash
 pip install -e ".[dev]"
-pytest                  # unit test (22 attivi)
+pytest                  # 22 unit tests
 ruff check .            # lint
 ruff format .           # format
+mypy consuelo       # types
 ```
 
-## Troubleshooting
+Contributions welcome — open an issue first if it's a structural change.
 
-**Ollama non risponde**
-```bash
-ollama serve &
-curl http://localhost:11434/api/tags   # deve rispondere 200
+---
+
+## Automation
+
+Run via cron (macOS / Linux):
+
+```cron
+0 7 * * * cd /path/to/consuelo && .venv/bin/consuelo run >> /tmp/sb.log 2>&1
 ```
 
-**Articoli `.html` con poca struttura preservata**
-Readability+markdownify produce risultato pulito ma non perfetto per
-pagine JS-rendered o con layout complesso. Salva direttamente in `.md`
-via Web Clipper se possibile.
+GitHub Actions / Cloud Run / Kubernetes CronJob: the workflow is plain Python — just mount your vault and secrets. A reference workflow lives in [`docs/automation.md`](docs/automation.md).
 
-**Categoria nuova creata invece di riusare esistente**
-LLM riceve `existing_categories()` come hint. Se sbaglia, è il prompt
-da raffinare (`prompts/classify.txt`) o lascia che impari su volume.
-Folder simili "AI" vs "Artificial Intelligence" si possono mergiare a
-mano una volta accumulate.
+---
 
-**Drive: service account 403 / file non trovato**
-Service account NON ha quota propria. Cartelle DEVONO essere condivise
-come Editor con `client_email` dal JSON SA. Verifica condivisione.
+## Roadmap
 
-**RSS feed bozo / parsing error**
-Feed malformato lato producer. Log warning, skip feed. Verifica URL feed
-con `curl -sL <url>`.
+- [ ] Per-item flow for YouTube transcripts (currently gathered but not written).
+- [ ] Per-item flow for Maps places (same).
+- [ ] Pinecone backend as a swappable vector store.
+- [ ] Hierarchical categorisation (sub-folders under `Tech/`, `System_Design/`, …).
+- [ ] Reference GitHub Actions workflow for fully managed runs.
 
-**`feeds.json` malformed JSON**
-File vuoto/corrupt → log warning, feed skipped. Cancella file o ripristina
-formato valido.
+---
 
-**Daily/ non più aggiornato**
-Workflow è ora per-item. Daily aggregato disabilitato. Le note enriched
-vivono in `Notes/<Categoria>/`. Per re-attivare Daily, modifica `cli.py::run`.
+## License
 
-**Cost tracking sballato**
-Pricing in `llm.py::_PRICING_PER_1M_USD` può essere obsoleto. Update sync
-con OpenAI pricing page.
+MIT — see [LICENSE](LICENSE).
 
-**Embedding cache occupa molto spazio**
-Cache safe-to-delete: `rm vault/.cache/embeddings.db`. Rebuild on demand.
+---
 
-**ChromaDB warning / vault empty**
-Workflow procede senza correlations (`source.correlations = []`).
-Esegui `second-brain index` per popolare.
+## Author
+
+**Valerio Uberti** — [LinkedIn](https://www.linkedin.com/in/valeriouberti) · [GitHub](https://github.com/valeriouberti)
+
+If this project is useful to you, a ⭐ on the repo means a lot.

@@ -1,11 +1,11 @@
-"""Unit tests for second_brain.state."""
+"""Unit tests for consuelo.state."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
-from second_brain import state
+from consuelo import state
 
 
 def test_get_item_id_article(vault: Path) -> None:

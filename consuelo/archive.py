@@ -14,26 +14,32 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
-from second_brain.config import vault_path
-from second_brain.models import Source
+from consuelo.config import vault_path
+from consuelo.models import Source
 
 logger = logging.getLogger(__name__)
 
 EXCLUDED_NOTES_SUBDIRS: frozenset[str] = frozenset({"articles", "youtube", "places"})
+
+# Folders under Notes/ that are not topical categories — e.g. snippet
+# libraries, formatted resources. Indexed for RAG but never suggested
+# to the classify LLM.
+CATEGORY_BLOCKLIST: frozenset[str] = frozenset({"Snippets_Library"})
 
 
 def existing_categories() -> list[str]:
     """Top-level folder names under ``Notes/`` that look like user categories.
 
     Excludes the archive subdirs we manage ourselves (``articles/``,
-    ``youtube/``, ``places/``, ``pdfs/``) and dotfiles. Used as a hint
-    to the classify LLM so it reuses category names already in the
-    vault instead of inventing near-duplicates.
+    ``youtube/``, ``places/``, ``pdfs/``), non-topical folders in
+    ``CATEGORY_BLOCKLIST``, and dotfiles. Used as a hint to the
+    classify LLM so it reuses category names already in the vault
+    instead of inventing near-duplicates.
     """
     notes_dir = Path(vault_path()) / "Notes"
     if not notes_dir.exists():
         return []
-    skip = EXCLUDED_NOTES_SUBDIRS | {"pdfs"}
+    skip = EXCLUDED_NOTES_SUBDIRS | {"pdfs"} | CATEGORY_BLOCKLIST
     return sorted(
         p.name
         for p in notes_dir.iterdir()

@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "second-brain"
+name = "consuelo"
 version = "0.1.0"
 description = "Daily Obsidian recap workflow with embeddings + LLM correlations"
 readme = "README.md"
@@ -41,10 +41,10 @@ dev = [
 ]
 
 [project.scripts]
-second-brain = "second_brain.cli:cli"
+consuelo = "consuelo.cli:cli"
 
 [tool.hatch.build.targets.wheel]
-packages = ["second_brain"]
+packages = ["consuelo"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "prompts" = "prompts"

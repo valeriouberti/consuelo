@@ -23,10 +23,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from second_brain.config import configure_logging, vault_path  # noqa: E402
-from second_brain.models import Source  # noqa: E402
-from second_brain.pipeline import _classify_one, embed_sources  # noqa: E402
-from second_brain.rendering import write_classified_note  # noqa: E402
+from consuelo.config import configure_logging, vault_path  # noqa: E402
+from consuelo.models import Source  # noqa: E402
+from consuelo.pipeline import _classify_one, embed_sources  # noqa: E402
+from consuelo.rendering import write_classified_note  # noqa: E402
 
 logger = logging.getLogger("reclassify")
 
@@ -96,8 +96,8 @@ def collect_category_hints() -> list[str]:
 
 
 async def classify_all(sources: list[Source], categories: list[str]) -> None:
-    from second_brain.config import async_concurrency
-    from second_brain import vector
+    from consuelo.config import async_concurrency
+    from consuelo import vector
 
     collection = vector.open_collection()
     sem = asyncio.Semaphore(async_concurrency())

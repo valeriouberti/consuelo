@@ -1,4 +1,4 @@
-"""Unit tests for second_brain.rendering."""
+"""Unit tests for consuelo.rendering."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ from pathlib import Path
 
 import frontmatter
 
-from second_brain.models import Source
-from second_brain.rendering import kebab, render_daily, write_daily
+from consuelo.models import Source
+from consuelo.rendering import kebab, render_daily, write_daily
 
 
 def test_kebab_lowercases_and_dashes() -> None:

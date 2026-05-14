@@ -23,7 +23,7 @@ import struct
 import threading
 from pathlib import Path
 
-from second_brain.config import cache_path
+from consuelo.config import cache_path
 
 logger = logging.getLogger(__name__)
 

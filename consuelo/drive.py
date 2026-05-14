@@ -18,7 +18,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from second_brain.config import gdrive_credentials_json
+from consuelo.config import gdrive_credentials_json
 
 logger = logging.getLogger(__name__)
 

@@ -17,11 +17,19 @@ Return strict JSON with this shape:
 
 RULES:
 - Reply in the same language as the article (IT → IT summary + IT tags; EN → EN).
-- "category" is a single, short, Title Case folder name (e.g. "Tech", "Finance",
-  "Machine Learning"). Reuse one from the provided CATEGORIES list whenever the
-  article fits — do NOT invent near-duplicates ("AI" vs "Artificial Intelligence":
-  pick the existing one). Propose a new name only if no existing category fits.
-  Use plain letters/digits/spaces only; no slashes, emojis, or punctuation.
+- "category" is a single, short, Title Case folder name at DOMAIN level
+  (e.g. "Tech", "Finance", "AI", "System_Design"). Reuse one from the provided
+  CATEGORIES list whenever the article fits — do NOT invent near-duplicates
+  ("AI" vs "Artificial Intelligence": pick the existing one). Propose a new
+  name only if no existing category fits.
+- Granularity rule: keep categories BROAD. Programming languages, frameworks,
+  libraries, and specific tools (Python, JavaScript, Bun, FastAPI, React,
+  Kafka, …) belong under the broad domain category "Tech" — never as their
+  own top-level category. Architecture / distributed-systems / infra patterns
+  belong under "System_Design". Encode the specifics as tags, not as category.
+- Use plain letters/digits/spaces/underscores only; no slashes, emojis, or
+  punctuation. Spaces and underscores are treated as equivalent for matching
+  against existing categories ("System Design" == "System_Design").
 - "summary" is 3-5 short sentences. Capture the article's main claim and one or
   two notable details. Do NOT just paraphrase the title.
 - "tags" are 3-7 short lowercase kebab-case identifiers ("platform-engineering",

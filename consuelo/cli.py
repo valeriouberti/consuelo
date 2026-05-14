@@ -1,4 +1,4 @@
-"""Click CLI: ``second-brain run`` and ``second-brain index``."""
+"""Click CLI: ``consuelo run`` and ``consuelo index``."""
 
 from __future__ import annotations
 
@@ -12,12 +12,12 @@ from datetime import date, datetime
 import click
 from dotenv import load_dotenv
 
-from second_brain.config import configure_logging, llm_mode
-from second_brain.llm import reset_usage, usage_summary
-from second_brain.pipeline import (
+from consuelo.config import configure_logging, llm_mode
+from consuelo.llm import reset_usage, usage_summary
+from consuelo.pipeline import (
     ask as ask_pipeline,
 )
-from second_brain.pipeline import (
+from consuelo.pipeline import (
     classify_sources,
     commit_state,
     embed_sources,
@@ -25,14 +25,14 @@ from second_brain.pipeline import (
     index_notes,
     log_status_report,
 )
-from second_brain.rendering import render_classified_note, write_classified_note
+from consuelo.rendering import render_classified_note, write_classified_note
 
 logger = logging.getLogger(__name__)
 
 
 @click.group()
 def cli() -> None:
-    """Second Brain — daily Obsidian recap workflow."""
+    """Consuelo — daily Obsidian recap workflow."""
     load_dotenv()
     configure_logging()
 
@@ -156,7 +156,7 @@ def ask(query: str, top_k: int, mode: str | None) -> None:
 
     Example::
 
-        second-brain ask "cosa ho letto sui Kubernetes operators?"
+        consuelo ask "cosa ho letto sui Kubernetes operators?"
     """
     if mode:
         os.environ["LLM_MODE"] = mode

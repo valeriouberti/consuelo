@@ -1,14 +1,14 @@
-"""Unit tests for second_brain.archive."""
+"""Unit tests for consuelo.archive."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from second_brain.archive import (
+from consuelo.archive import (
     archive_previous_daily,
     archive_sources,
 )
-from second_brain.models import Source
+from consuelo.models import Source
 
 
 def _make_source(state_source: str, source_path: Path) -> Source:

@@ -73,7 +73,7 @@ def google_maps_api_key() -> str | None:
 def gdrive_credentials_json() -> str | None:
     """Path to a Google service account JSON key file.
 
-    Used by ``second_brain.drive`` to authenticate against Drive v3.
+    Used by ``consuelo.drive`` to authenticate against Drive v3.
     """
     return os.environ.get("GDRIVE_CREDENTIALS_JSON") or None
 

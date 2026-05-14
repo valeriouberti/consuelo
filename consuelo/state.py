@@ -19,7 +19,7 @@ from collections.abc import Iterable
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from second_brain.config import state_path, vault_path
+from consuelo.config import state_path, vault_path
 
 logger = logging.getLogger(__name__)
 
