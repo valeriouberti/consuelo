@@ -28,7 +28,7 @@ For cleaner macOS integration than cron:
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>Label</key>           <string>com.valeriouberti.secondbrain</string>
+    <key>Label</key>           <string>com.valeriouberti.consuelo</string>
     <key>ProgramArguments</key>
     <array>
         <string>/Users/me/path/to/consuelo/.venv/bin/consuelo</string>
@@ -46,10 +46,10 @@ For cleaner macOS integration than cron:
 </plist>
 ```
 
-Save as `~/Library/LaunchAgents/com.valeriouberti.secondbrain.plist`, then:
+Save as `~/Library/LaunchAgents/com.valeriouberti.consuelo.plist`, then:
 
 ```bash
-launchctl load ~/Library/LaunchAgents/com.valeriouberti.secondbrain.plist
+launchctl load ~/Library/LaunchAgents/com.valeriouberti.consuelo.plist
 ```
 
 ## GitHub Actions
