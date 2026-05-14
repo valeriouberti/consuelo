@@ -22,3 +22,6 @@ vault/.cache/
 .DS_Store
 credentials/
 consuelo.code-workspace
+
+# Docker
+.docker-state/

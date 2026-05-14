@@ -1,0 +1,74 @@
+# Consuelo — docker-compose
+#
+# Usage:
+#   Cloud mode (OpenAI):
+#     docker compose run --rm consuelo run
+#
+#   Local mode (Ollama in container):
+#     docker compose --profile local up -d ollama
+#     docker compose --profile local exec ollama ollama pull qwen2.5:14b
+#     docker compose --profile local exec ollama ollama pull nomic-embed-text
+#     LLM_MODE=local docker compose --profile local run --rm consuelo run
+#
+#   RAG query:
+#     docker compose run --rm consuelo ask "your question"
+#
+#   Re-index vault:
+#     docker compose run --rm consuelo index
+#
+# Volumes:
+#   ./vault          → /vault           (Obsidian vault, mutated by pipeline)
+#   ./.docker-state  → /state           (Chroma + state + embedding cache)
+#   ./credentials    → /credentials:ro  (Google Drive service account JSON)
+#
+# Env vars are loaded from .env (gitignored). See .env.example for the full list.
+
+services:
+  consuelo:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: consuelo:local
+    env_file: .env
+    environment:
+      VAULT_PATH: /vault
+      STATE_PATH: /state/state
+      CACHE_PATH: /state/cache
+      CHROMA_PATH: /state/chroma
+      OLLAMA_HOST: http://ollama:11434
+      GDRIVE_CREDENTIALS_JSON: /credentials/gdrive.json
+    volumes:
+      - ./vault:/vault
+      - ./.docker-state:/state
+      - ./credentials:/credentials:ro
+    restart: "no"
+    depends_on:
+      ollama:
+        condition: service_healthy
+        required: false
+
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["local"]
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    restart: unless-stopped
+    # Uncomment for NVIDIA GPU passthrough (requires nvidia-container-toolkit):
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+volumes:
+  ollama-models:
