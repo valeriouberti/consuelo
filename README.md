@@ -362,5 +362,3 @@ MIT — see [LICENSE](LICENSE).
 ## Author
 
 **Valerio Uberti** — [LinkedIn](https://www.linkedin.com/in/valeriouberti) · [GitHub](https://github.com/valeriouberti)
-
-If this project is useful to you, a ⭐ on the repo means a lot.
